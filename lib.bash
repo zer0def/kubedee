@@ -774,6 +774,53 @@ kubedee::launch_etcd() {
 
 # Args:
 #   $1 The validated cluster name
+kubedee::launch_registry() {
+  local -r cluster_name="${1}"
+  local -r container_name="kubedee-${cluster_name}-registry"
+  local -r network_id_file="${kubedee_dir}/clusters/${cluster_name}/network_id"
+  local network_id
+  network_id="$(cat "${network_id_file}")"
+  lxc info "${container_name}" &>/dev/null && return
+  lxc init --storage "${storage_pool}" \
+    --config raw.lxc="${raw_lxc_apparmor_allow_incomplete}" \
+    "${kubedee_container_image}" "${container_name}"
+  lxc network attach "${network_id}" "${container_name}" eth0 eth0
+  lxc start "${container_name}"
+  kubedee::ensure_machine_id "${container_name}"
+}
+
+# Args:
+#   $1 The validated cluster name
+kubedee::configure_registry() {
+  local -r cluster_name="${1}"
+  local -r container_name="kubedee-${cluster_name}-registry"
+  kubedee::container_wait_running "${container_name}"
+  local ip="$(kubedee::container_ipv4_address "${container_name}")"
+  kubedee::log_info "Providing files to ${container_name} ..."
+
+  lxc file push -p "${kubedee_source_dir}/configs/registry/config.yml" "${container_name}/etc/docker/registry/config.yml"
+
+  kubedee::log_info "Configuring ${container_name} ..."
+  cat <<EOF | lxc exec "${container_name}" bash ${KUBEDEE_DEBUG:+-x}
+set -euo pipefail
+cat >/etc/systemd/system/oci-registry.service <<'OCI_REGISTRY'
+[Unit]
+Description=oci-registry
+
+[Service]
+ExecStart=/usr/local/bin/registry serve /etc/docker/registry/config.yml
+Restart=on-failure
+RestartSec=5
+OCI_REGISTRY
+
+systemctl daemon-reload
+systemctl -q enable oci-registry
+systemctl start oci-registry
+EOF
+}
+
+# Args:
+#   $1 The validated cluster name
 kubedee::configure_etcd() {
   local -r cluster_name="${1}"
   local -r container_name="kubedee-${cluster_name}-etcd"
@@ -786,7 +833,7 @@ kubedee::configure_etcd() {
   lxc file push -p "${kubedee_dir}/clusters/${cluster_name}/certificates/"{etcd.pem,etcd-key.pem,ca-etcd.pem} "${container_name}/etc/etcd/"
 
   kubedee::log_info "Configuring ${container_name} ..."
-  cat <<EOF | lxc exec "${container_name}" bash
+  cat <<EOF | lxc exec "${container_name}" bash ${KUBEDEE_DEBUG:+-x}
 set -euo pipefail
 cat >/etc/systemd/system/etcd.service <<'ETCD_UNIT'
 [Unit]
@@ -866,7 +913,7 @@ kubedee::configure_controller() {
   fi
 
   kubedee::log_info "Configuring ${container_name} ..."
-  cat <<EOF | lxc exec "${container_name}" bash
+  cat <<EOF | lxc exec "${container_name}" bash ${KUBEDEE_DEBUG:+-x}
 set -euo pipefail
 cat >/etc/systemd/system/kube-apiserver.service <<'KUBE_APISERVER_UNIT'
 [Unit]
@@ -1085,6 +1132,8 @@ kubedee::launch_container() {
 kubedee::configure_worker() {
   local -r cluster_name="${1}"
   local -r container_name="${2}"
+  local -r registry_ip="$(kubedee::container_ipv4_address "kubedee-${cluster_name}-registry")"
+
   kubedee::container_wait_running "${container_name}"
   kubedee::create_certificate_worker "${cluster_name}" "${container_name}"
   kubedee::create_kubeconfig_worker "${cluster_name}" "${container_name}"
@@ -1120,13 +1169,28 @@ kubedee::configure_worker() {
   fi
 
   kubedee::log_info "Configuring ${container_name} ..."
-  cat <<EOF | lxc exec "${container_name}" bash
+  cat <<EOF | lxc exec "${container_name}" bash ${KUBEDEE_DEBUG:+-x}
 set -euo pipefail
 
 mkdir -p /etc/containers
 mkdir -p /usr/share/containers/oci/hooks.d
 
 ln -s /etc/crio/policy.json /etc/containers/policy.json
+cat <<'REGISTRIES_CONF' >/etc/containers/registries.conf
+unqualified-search-registries = ['docker.io']
+[[registry]]
+prefix = "registry.local:5000"
+insecure = true
+location = "kubedee-${cluster_name}-registry:5000"
+[[registry]]
+prefix = "kubedee-${cluster_name}-registry:5000"
+insecure = true
+location = "kubedee-${cluster_name}-registry:5000"
+[[registry]]
+prefix = "${registry_ip:-127.0.0.1}:5000"
+insecure = true
+location = "${registry_ip:-127.0.0.1}:5000"
+REGISTRIES_CONF
 
 mkdir -p /etc/cni/net.d
 
@@ -1135,7 +1199,7 @@ cat >/etc/systemd/system/crio.service <<'CRIO_UNIT'
 Description=CRI-O daemon
 
 [Service]
-ExecStart=/usr/local/bin/crio --registry docker.io
+ExecStart=/usr/local/bin/crio
 Restart=always
 RestartSec=10s
 
@@ -1415,6 +1479,16 @@ curl -sSL https://github.com/containers/conmon/archive/${kubedee_conmon_version}
 make clean
 make
 cp bin/conmon /usr/local/bin
+
+# registry
+export GO111MODULE=off
+mkdir -p \${GOPATH}/src/github.com/docker/distribution
+git clone https://github.com/distribution/distribution \${GOPATH}/src/github.com/docker/distribution -b v2.8.2
+cd \${GOPATH}/src/github.com/docker/distribution
+go get -v -d
+make
+cp bin/registry /usr/local/bin
+unset GO111MODULE
 
 # runc
 mkdir -p \${GOPATH}/src/github.com/opencontainers/runc
