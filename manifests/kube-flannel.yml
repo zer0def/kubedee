@@ -11,14 +11,14 @@ metadata:
 spec:
   privileged: false
   volumes:
-    - configMap
-    - secret
-    - emptyDir
-    - hostPath
+  - configMap
+  - secret
+  - emptyDir
+  - hostPath
   allowedHostPaths:
-    - pathPrefix: "/etc/cni/net.d"
-    - pathPrefix: "/etc/kube-flannel"
-    - pathPrefix: "/run/flannel"
+  - pathPrefix: "/etc/cni/net.d"
+  - pathPrefix: "/etc/kube-flannel"
+  - pathPrefix: "/run/flannel"
   readOnlyRootFilesystem: false
   # Users and groups
   runAsUser:
@@ -51,29 +51,19 @@ apiVersion: rbac.authorization.k8s.io/v1
 metadata:
   name: flannel
 rules:
-  - apiGroups: ['extensions']
-    resources: ['podsecuritypolicies']
-    verbs: ['use']
-    resourceNames: ['psp.flannel.unprivileged']
-  - apiGroups:
-      - ""
-    resources:
-      - pods
-    verbs:
-      - get
-  - apiGroups:
-      - ""
-    resources:
-      - nodes
-    verbs:
-      - list
-      - watch
-  - apiGroups:
-      - ""
-    resources:
-      - nodes/status
-    verbs:
-      - patch
+- apiGroups: ['extensions']
+  resources: ['podsecuritypolicies']
+  verbs: ['use']
+  resourceNames: ['psp.flannel.unprivileged']
+- apiGroups: [""]
+  resources: ["pods"]
+  verbs: ["get"]
+- apiGroups: [""]
+  resources: ["nodes"]
+  verbs: ["list", "watch"]
+- apiGroups: [""]
+  resources: ["nodes/status"]
+  verbs: ["patch"]
 ---
 kind: ClusterRoleBinding
 apiVersion: rbac.authorization.k8s.io/v1
@@ -127,14 +117,15 @@ data:
     {
       "Network": "10.244.0.0/16",
       "Backend": {
-        "Type": "vxlan"
+        "Type": "vxlan",
+        "DirectRouting": true
       }
     }
 ---
 apiVersion: apps/v1
 kind: DaemonSet
 metadata:
-  name: kube-flannel-ds-amd64
+  name: kube-flannel-ds
   namespace: kube-system
   labels:
     tier: node
@@ -153,15 +144,11 @@ spec:
         nodeAffinity:
           requiredDuringSchedulingIgnoredDuringExecution:
             nodeSelectorTerms:
-              - matchExpressions:
-                  - key: beta.kubernetes.io/os
-                    operator: In
-                    values:
-                      - linux
-                  - key: beta.kubernetes.io/arch
-                    operator: In
-                    values:
-                      - amd64
+            - matchExpressions:
+              - key: beta.kubernetes.io/os
+                operator: In
+                values:
+                - linux
       hostNetwork: true
       tolerations:
       - operator: Exists
@@ -169,7 +156,7 @@ spec:
       serviceAccountName: flannel
       initContainers:
       - name: install-cni
-        image: quay.io/coreos/flannel:v0.13.0-amd64
+        image: quay.io/coreos/flannel:v0.15.1
         command:
         - cp
         args:
@@ -183,7 +170,7 @@ spec:
           mountPath: /etc/kube-flannel/
       containers:
       - name: kube-flannel
-        image: quay.io/coreos/flannel:v0.13.0-amd64
+        image: quay.io/coreos/flannel:v0.15.1
         command:
         - /opt/bin/flanneld
         args:
@@ -199,7 +186,7 @@ spec:
         securityContext:
           privileged: false
           capabilities:
-            add: ["NET_ADMIN"]
+            add: ["NET_ADMIN", "NET_RAW"]
         env:
         - name: POD_NAME
           valueFrom:
@@ -215,12 +202,12 @@ spec:
         - name: flannel-cfg
           mountPath: /etc/kube-flannel/
       volumes:
-        - name: run
-          hostPath:
-            path: /run/flannel
-        - name: cni
-          hostPath:
-            path: /etc/cni/net.d
-        - name: flannel-cfg
-          configMap:
-            name: kube-flannel-cfg
+      - name: run
+        hostPath:
+          path: /run/flannel
+      - name: cni
+        hostPath:
+          path: /etc/cni/net.d
+      - name: flannel-cfg
+        configMap:
+          name: kube-flannel-cfg

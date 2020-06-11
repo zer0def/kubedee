@@ -37,6 +37,7 @@ kubedee_dir="${kubedee_dir:-${HOME}/.local/share/kubedee}"
 kubernetes_version=""
 no_set_context="false"
 num_worker=2
+use_host_binaries="false"
 kubedee_vm_mode="false"
 controller_limits_cpu="$(nproc)"
 controller_limits_memory="4GiB"
@@ -77,6 +78,7 @@ Options:
                                                         takes precedence over \`--bin-dir\`
   --no-set-context                                      prevent kubedee from adding a new kubeconfig context
   --num-worker <num>                                    number of worker nodes to start (default: 2)
+  --use-host-binaries                                   allow using binaries from the host within cluster containers
   --vm                                                  launch LXD virtual machines instead of containers
   --controller-limits-cpu <num>                         set controller container/VM \`limits.cpu\` (default: ${controller_limits_cpu})
   --controller-limits-memory <amount>                   set controller container/VM \`limits.memory\` (default: ${controller_limits_memory})
@@ -114,8 +116,8 @@ cmd_delete() {
     [[ "${c}" == "kubedee-${cluster_name}-"* ]] && lxc delete -f "${c}"
   done
   kubedee::delete_network "${cluster_name}"
-  [[ "${no_set_context}" == "false" ]] && kubectl config unset current-context >/dev/null
-  kubectl config delete-context "kubedee-${cluster_name}" &>/dev/null || true
+  [[ "${no_set_context}" == "false" ]] && "${_kubectl}" config unset current-context >/dev/null
+  "${_kubectl}" config delete-context "kubedee-${cluster_name}" &>/dev/null || true
   rm -rf "${kubedee_dir}/clusters/${cluster_name}"
 }
 
@@ -138,6 +140,7 @@ cmd_start() {
   wait $(jobs -rp)
   kubedee::configure_etcd "${cluster_name}"
   kubedee::create_certificate_kubernetes "${cluster_name}" "${apiserver_extra_hostnames}"
+  kubedee::find_kubectl start
   kubedee::configure_controller "${cluster_name}" "kubedee-${cluster_name}-controller" "${admission_plugins}"
   for ((i = 0; i < num_worker; i++)); do
     kubedee::configure_worker "${cluster_name}" "kubedee-${cluster_name}-worker-${worker_suffixes[${i}]}"
@@ -179,7 +182,7 @@ cmd_start() {
   kubedee::log_info "Cluster nodes can be accessed with 'lxc exec <name> bash'"
   kubedee::log_info "Cluster files can be found in '${kubedee_dir}/clusters/${cluster_name}'\\n"
   kubedee::log_info "Current node status is (should be ready soon):"
-  kubectl --kubeconfig "${kubedee_dir}/clusters/${cluster_name}/kubeconfig/admin.kubeconfig" get nodes
+  "${_kubectl}" --kubeconfig "${kubedee_dir}/clusters/${cluster_name}/kubeconfig/admin.kubeconfig" get nodes
   echo
 }
 
@@ -351,6 +354,10 @@ main() {
       shift
       shift
       ;;
+    --use-host-binaries)
+      use_host_binaries="true"
+      shift
+      ;;
     help | -h | --help)
       exit_usage
       ;;
@@ -361,8 +368,8 @@ main() {
     esac
   done
   local -r k8s_suffix="${kubernetes_version:-localbin}"
-  kubedee_container_image="kubedee-cnt-${kubedee_version//[._]/-}-k8s-${k8s_suffix//[._]/-}"
-  kubedee_vm_image="kubedee-vm-${kubedee_version//[._]/-}-k8s-${k8s_suffix//[._]/-}"
+  kubedee_container_image="kubedee-cnt-${kubedee_version//[._]/-}-k8s-${k8s_suffix//[._]/-}-${sys_arch}"
+  kubedee_vm_image="kubedee-vm-${kubedee_version//[._]/-}-k8s-${k8s_suffix//[._]/-}-${sys_arch}"
   kubedee_image="${kubedee_container_image}"
   lxc_init_opts="--storage ${storage_pool}"
   if [[ "${kubedee_vm_mode}" == "true" ]]; then
@@ -381,6 +388,7 @@ main() {
   set -u
   local -r cmd="${1:-list}"
   shift || true
+  kubedee::find_kubectl "${cmd}"
   case "${cmd}" in
   admin-sa-token | controller-ip | create | create-admin-sa | create-user-sa | delete | etcd-env | kubectl-env | list | smoke-test | start | start-worker | user-sa-token | version)
     "cmd_${cmd}" "$@"
