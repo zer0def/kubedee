@@ -3,8 +3,9 @@
 # Expected variables:
 #   $kubedee_source_dir The directory where kubedee's source code is (i.e. git repo)
 #   $kubedee_dir The directory to store kubedee's internal data
-#   $kubedee_cache_dir The directory to store tools required by kubedee
 #   $kubedee_version The kubedee version, used for the cache
+#   $kubedee_image Name for the LXD image
+#   $lxc_init_opts Additional LXC container creation options
 
 kubedee::log_info() {
   local -r message="${1:-""}"
@@ -36,11 +37,6 @@ kubedee::exit_error() {
 # shellcheck disable=SC2154
 [[ -z "${kubedee_dir}" ]] && {
   kubedee::log_error "Internal error: \$kubedee_dir not set"
-  return 1
-}
-# shellcheck disable=SC2154
-[[ -z "${kubedee_cache_dir}" ]] && {
-  kubedee::log_error "Internal error: \$kubedee_cache_dir not set"
   return 1
 }
 # shellcheck disable=SC2154
@@ -77,6 +73,36 @@ else
 fi
 
 # Args:
+#   $1 The full container name
+kubedee::fixup_network_ifaces() {
+  local -r container_name="${1}" iface_src="enp5s0" iface_dest="eth0"
+
+  # shellcheck disable=SC2016
+  until lxc exec "${container_name}" -- bash -c 'sed -i "s/\(^[[:space:]]*linux.*\)/\1 net.ifnames=0/g" $(find /boot -iname grub.cfg)' &>/dev/null; do
+    sleep 3
+  done
+  lxc exec "${container_name}" -- bash -c "sed -i 's/${iface_src}/${iface_dest}/g' /etc/netplan/*"
+  lxc restart "${container_name}"
+  until lxc exec "${container_name}" -- bash -c '[ ! -e /run/nologin ]' &>/dev/null; do
+    sleep 3
+  done
+}
+
+# Args:
+#   $1 The full container name
+kubedee::ensure_machine_id() {
+  [[ "$(kubedee::container_type "${cluster_name}")" == "container" ]] && return
+  local -r container_name="${1}"
+  until lxc exec "${container_name}" -- bash -c 'rm /etc/machine-id; dbus-uuidgen --ensure=/etc/machine-id'; do
+    sleep 3
+  done
+  lxc restart "${container_name}"
+  until lxc exec "${container_name}" -- bash -c '[ ! -e /run/nologin ]' &>/dev/null; do
+    sleep 3
+  done
+}
+
+# Args:
 #   $1 The unvalidated cluster name
 #
 # Return validated name or exit with error
@@ -101,288 +127,6 @@ kubedee::validate_name() {
 kubedee::cd_or_exit_error() {
   local -r target="${1}"
   cd "${target}" || kubedee::exit_error "Failed to cd to ${target}"
-}
-
-# Args:
-#   $1 The validated cluster name
-kubedee::prune_old_caches() {
-  local -r cluster_name="${1}"
-  kubedee::log_info "Pruning old kubedee caches ..."
-  for cache_dir in "${kubedee_dir}/cache/"*; do
-    if [[ "${cache_dir}" != "${kubedee_cache_dir}" ]]; then
-      rm -rf "${cache_dir}"
-    fi
-  done
-}
-
-# Args:
-#   $1 The target file or directory
-#   $* The source files or directories
-kubedee::copyl_or_exit_error() {
-  local -r target="${1}"
-  shift
-  for f in "$@"; do
-    if ! cp -l "${f}" "${target}" &>/dev/null; then
-      if ! cp "${f}" "${target}"; then
-        kubedee::exit_error "Failed to copy '${f}' to '${target}'"
-      fi
-    fi
-  done
-}
-
-# Args:
-#   $1 The target file or directory
-#   $* The source files or directories
-kubedee::copy_or_exit_error() {
-  local -r target="${1}"
-  shift
-  for f in "$@"; do
-    if ! cp "${f}" "${target}"; then
-      kubedee::exit_error "Failed to copy '${f}' to '${target}'"
-    fi
-  done
-}
-
-# Args:
-#   $1 The validated cluster name
-#   $2 The path to the k8s bin directory (optional)
-kubedee::copy_k8s_binaries() {
-  local -r cluster_name="${1}"
-  local -r target_dir="${kubedee_dir}/clusters/${cluster_name}/rootfs/usr/local/bin"
-  mkdir -p "${target_dir}"
-  local -r source_dir="${2:-$(pwd)/_output/bin}"
-  local -r files=(
-    kube-apiserver
-    kube-controller-manager
-    kube-proxy
-    kube-scheduler
-    kubectl
-    kubelet
-  )
-  for f in "${files[@]}"; do
-    kubedee::copy_or_exit_error "${target_dir}/" "${source_dir}/${f}"
-  done
-}
-
-kubedee::fetch_k8s() {
-  local -r k8s_version="${1}"
-  local -r target_dir="${kubedee_cache_dir}/kubernetes/${k8s_version}"
-  if [[ -e "${target_dir}/kube-apiserver" ]] &&
-    [[ -e "${target_dir}/kube-controller-manager" ]] &&
-    [[ -e "${target_dir}/kube-proxy" ]] &&
-    [[ -e "${target_dir}/kube-scheduler" ]] &&
-    [[ -e "${target_dir}/kubectl" ]] &&
-    [[ -e "${target_dir}/kubelet" ]]; then
-    # nothing to do
-    return
-  fi
-  mkdir -p "${target_dir}"
-  (
-    kubedee::cd_or_exit_error "${target_dir}"
-    kubedee::log_info "Fetching Kubernetes ${k8s_version} ..."
-    if ! curl -fsSLI "https://dl.k8s.io/${k8s_version}/kubernetes-server-linux-amd64.tar.gz" >/dev/null; then
-      kubedee::exit_error "Kubernetes version '${k8s_version}' not found on dl.k8s.io"
-    fi
-    curl -fsSL -o - "https://dl.k8s.io/${k8s_version}/kubernetes-server-linux-amd64.tar.gz" |
-      tar -xzf - --strip-components 3 \
-        "kubernetes/server/bin/"{kube-apiserver,kube-controller-manager,kubectl,kubelet,kube-proxy,kube-scheduler}
-  )
-}
-
-kubedee::fetch_etcd() {
-  local -r cache_dir="${kubedee_cache_dir}/etcd/${kubedee_etcd_version}"
-  mkdir -p "${cache_dir}"
-  [[ -e "${cache_dir}/etcd" && -e "${cache_dir}/etcdctl" ]] && return
-  local tmp_dir
-  tmp_dir="$(mktemp -d /tmp/kubedee-XXXXXX)"
-  (
-    kubedee::cd_or_exit_error "${tmp_dir}"
-    kubedee::log_info "Fetching etcd ${kubedee_etcd_version} ..."
-    curl -fsSL -o - "https://github.com/etcd-io/etcd/releases/download/${kubedee_etcd_version}/etcd-${kubedee_etcd_version}-linux-amd64.tar.gz" |
-      tar -xzf - --strip-components 1
-    kubedee::copyl_or_exit_error "${cache_dir}/" etcd etcdctl
-  )
-  rm -rf "${tmp_dir}"
-}
-
-kubedee::inject_kata_crio_config() {
-  local -r cache_dir="${kubedee_cache_dir}/crio/${kubedee_crio_version}"
-  sed -i -e 's/^\([[:space:]]*#*[[:space:]]*manage\(_network\)*_ns_lifecycle\)\s*=.*/\1 = true/g' "${cache_dir}/crio.conf"
-  cat <<EOF >>"${cache_dir}/crio.conf"
-# Kata Containers with the QEMU VMM
-[crio.runtime.runtimes.kata-qemu]
-privileged_without_host_devices = true
-runtime_path = "/opt/kata/bin/containerd-shim-kata-v2"
-runtime_type = "vm"
-
-# Kata Containers with the Firecracker VMM
-[crio.runtime.runtimes.kata-fc]
-privileged_without_host_devices = true
-runtime_path = "/opt/kata/bin/containerd-shim-kata-v2"
-runtime_type = "vm"
-
-# Kata Containers with the Cloud-Hypervisor VMM
-[crio.runtime.runtimes.kata-clh]
-privileged_without_host_devices = true
-runtime_path = "/opt/kata/bin/containerd-shim-kata-v2"
-runtime_type = "vm"
-EOF
-}
-
-kubedee::fetch_crio() {
-  local -r cache_dir="${kubedee_cache_dir}/crio/${kubedee_crio_version}"
-  mkdir -p "${cache_dir}"
-  [[ -e "${cache_dir}/crio" ]] && return
-  local tmp_dir
-  tmp_dir="$(mktemp -d /tmp/kubedee-XXXXXX)"
-  (
-    kubedee::cd_or_exit_error "${tmp_dir}"
-    kubedee::log_info "Fetching crio ${kubedee_crio_version} ..."
-    curl -fsSL -o - "https://files.schu.io/pub/cri-o/crio-amd64-${kubedee_crio_version}.tar.gz" |
-      tar -xzf -
-    kubedee::copyl_or_exit_error "${cache_dir}/" crio conmon pinns crio.conf crictl.yaml crio-umount.conf policy.json
-    kubedee::inject_kata_crio_config
-  )
-  rm -rf "${tmp_dir}"
-}
-
-kubedee::fetch_runc() {
-  local -r cache_dir="${kubedee_cache_dir}/runc/${kubedee_runc_version}"
-  mkdir -p "${cache_dir}"
-  [[ -e "${cache_dir}/runc" ]] && return
-  local tmp_dir
-  tmp_dir="$(mktemp -d /tmp/kubedee-XXXXXX)"
-  (
-    kubedee::cd_or_exit_error "${tmp_dir}"
-    kubedee::log_info "Fetching runc ${kubedee_runc_version} ..."
-    curl -fsSL -O "https://github.com/opencontainers/runc/releases/download/${kubedee_runc_version}/runc.amd64"
-    chmod +x runc.amd64
-    kubedee::copyl_or_exit_error "${cache_dir}/runc" runc.amd64
-  )
-  rm -rf "${tmp_dir}"
-}
-
-kubedee::fetch_cni_plugins() {
-  local -r cache_dir="${kubedee_cache_dir}/cni-plugins/${kubedee_cni_plugins_version}"
-  mkdir -p "${cache_dir}"
-  [[ -e "${cache_dir}/flannel" ]] && return
-  local tmp_dir
-  tmp_dir="$(mktemp -d /tmp/kubedee-XXXXXX)"
-  (
-    kubedee::cd_or_exit_error "${tmp_dir}"
-    kubedee::log_info "Fetching cni plugins ${kubedee_cni_plugins_version} ..."
-    curl -fsSL -o - "https://github.com/containernetworking/plugins/releases/download/${kubedee_cni_plugins_version}/cni-plugins-linux-amd64-${kubedee_cni_plugins_version}.tgz" |
-      tar -xzf -
-    kubedee::copyl_or_exit_error "${cache_dir}/" ./*
-  )
-  rm -rf "${tmp_dir}"
-}
-
-kubedee::fetch_registry() {
-  local -r cache_dir="${kubedee_cache_dir}/registry/${kubedee_registry_version}"
-  mkdir -p "${cache_dir}"
-  [[ -e "${cache_dir}/registry" ]] && return
-  local tmp_dir
-  tmp_dir="$(mktemp -d /tmp/kubedee-XXXXXX)"
-  (
-    kubedee::cd_or_exit_error "${tmp_dir}"
-    kubedee::log_info "Fetching registry ${kubedee_registry_version} ..."
-    curl -fsSL -o registry "https://${REGISTRY_SOURCE_DOMAIN}/pub/registry/${kubedee_registry_version}"
-    chmod +x registry
-    kubedee::copyl_or_exit_error "${cache_dir}/" registry
-  )
-  rm -rf "${tmp_dir}"
-}
-
-kubedee::fetch_kata() {
-  local -r cache_dir="${kubedee_cache_dir}/kata/${kubedee_kata_version}"
-  [[ -e "${cache_dir}/bin/kata-runtime" ]] && return
-  mkdir -p "${cache_dir}"
-  (
-    kubedee::cd_or_exit_error "${cache_dir}"
-    kubedee::log_info "Fetching Kata Containers ${kubedee_kata_version} ..."
-    curl -fsSL -o - "https://github.com/kata-containers/kata-containers/releases/download/${kubedee_kata_version}/kata-static-${kubedee_kata_version}-x86_64.tar.xz" |
-      tar -xJf - --strip-components 3 -C "${cache_dir}"
-  )
-}
-
-# Args:
-#   $1 The validated cluster name
-kubedee::copy_etcd_binaries() {
-  local -r cluster_name="${1}"
-  kubedee::fetch_etcd
-  local -r cache_dir="${kubedee_cache_dir}/etcd/${kubedee_etcd_version}"
-  local -r target_dir="${kubedee_dir}/clusters/${cluster_name}/rootfs/usr/local/bin"
-  mkdir -p "${target_dir}"
-  kubedee::copyl_or_exit_error "${target_dir}/" "${cache_dir}/"{etcd,etcdctl}
-}
-
-# Args:
-#   $1 The validated cluster name
-kubedee::k8s_minor_version() {
-  local -r cluster_name="${1}"
-  "${kubedee_dir}/clusters/${cluster_name}/rootfs/usr/local/bin/kubectl" version --client -o json | jq -r .clientVersion.minor
-}
-
-# Args:
-#   $1 The validated cluster name
-kubedee::copy_crio_files() {
-  local -r cluster_name="${1}"
-  kubedee::fetch_crio
-  local -r cache_dir="${kubedee_cache_dir}/crio/${kubedee_crio_version}"
-  local target_dir="${kubedee_dir}/clusters/${cluster_name}/rootfs/usr/local/bin"
-  mkdir -p "${target_dir}"
-  kubedee::copyl_or_exit_error "${target_dir}/" "${cache_dir}/"{crio,conmon,pinns}
-  target_dir="${kubedee_dir}/clusters/${cluster_name}/rootfs/etc/crio"
-  mkdir -p "${target_dir}/"
-  kubedee::copyl_or_exit_error "${target_dir}/" "${cache_dir}/"{crio.conf,crictl.yaml,crio-umount.conf,policy.json}
-}
-
-# Args:
-#   $1 The validated cluster name
-kubedee::copy_runc_binaries() {
-  local -r cluster_name="${1}"
-  kubedee::fetch_runc
-  local -r cache_dir="${kubedee_cache_dir}/runc/${kubedee_runc_version}"
-  local -r target_dir="${kubedee_dir}/clusters/${cluster_name}/rootfs/usr/bin"
-  mkdir -p "${target_dir}"
-  kubedee::copyl_or_exit_error "${target_dir}/" "${cache_dir}/runc"
-}
-
-# Args:
-#   $1 The validated cluster name
-kubedee::copy_cni_plugins() {
-  local -r cluster_name="${1}"
-  kubedee::fetch_cni_plugins
-  local -r cache_dir="${kubedee_cache_dir}/cni-plugins/${kubedee_cni_plugins_version}"
-  local -r target_dir="${kubedee_dir}/clusters/${cluster_name}/rootfs/opt/cni/bin"
-  mkdir -p "${target_dir}"
-  kubedee::copyl_or_exit_error "${target_dir}/" "${cache_dir}/"*
-}
-
-# Args:
-#   $1 The validated cluster name
-kubedee::copy_registry_files() {
-  local -r cluster_name="${1}"
-  kubedee::fetch_registry
-  local -r cache_dir="${kubedee_cache_dir}/registry/${kubedee_registry_version}"
-  local target_dir="${kubedee_dir}/clusters/${cluster_name}/rootfs/usr/local/bin"
-  mkdir -p "${target_dir}"
-  kubedee::copyl_or_exit_error "${target_dir}/" "${cache_dir}/registry"
-  target_dir="${kubedee_dir}/clusters/${cluster_name}/rootfs/etc/docker/registry"
-  mkdir -p "${target_dir}"
-  kubedee::copyl_or_exit_error "${target_dir}/" "${kubedee_source_dir}/configs/registry/config.yml"
-}
-
-# Args:
-#   $1 The validated cluster name
-kubedee::copy_kata_artifacts() {
-  local -r cluster_name="${1}"
-  kubedee::fetch_kata
-  local -r cache_dir="${kubedee_cache_dir}/kata/${kubedee_kata_version}"
-  local -r target_dir="${kubedee_dir}/clusters/${cluster_name}/rootfs/opt/kata"
-  mkdir -p "${target_dir}"
-  cp -r "${cache_dir}/"* "${target_dir}/"
 }
 
 # Args:
@@ -445,7 +189,14 @@ kubedee::container_status_code() {
 #   $1 The full container name
 kubedee::container_ipv4_address() {
   local -r container_name="${1}"
-  lxc list --format json | jq -r ".[] | select(.name == \"${container_name}\").state.network.eth0.addresses[] | select(.family == \"inet\").address"
+  lxc list --format json | jq -r ".[] | select(.name == \"${container_name}\").state.network | to_entries[] | select(.value.type == \"broadcast\").value.addresses[] | select(.family == \"inet\").address" | head -n1
+}
+
+# Args:
+#   $1 The full container name
+kubedee::container_type() {
+  local -r container_name="${1}"
+  lxc list --format json | jq -r ".[] | select(.name == \"${container_name}\").type"
 }
 
 # Args:
@@ -458,6 +209,13 @@ kubedee::container_wait_running() {
   done
   until [[ "$(kubedee::container_ipv4_address "${cluster_name}")" != "" ]]; do
     kubedee::log_info "Waiting for ${cluster_name} to get IPv4 address ..."
+    sleep 3
+  done
+  if [[ "$(kubedee::container_type "${cluster_name}")" == "container" ]]; then
+    lxc config device set "${cluster_name}" eth0 ipv4.address "$(kubedee::container_ipv4_address "${cluster_name}")"
+  fi
+  until [[ "$(kubedee::container_ipv4_address "${cluster_name}")" != "" ]]; do
+    kubedee::log_info "Waiting for ${cluster_name} to settle it's assigned IPv4 address ..."
     sleep 3
   done
 }
@@ -951,11 +709,13 @@ kubedee::launch_etcd() {
   local network_id
   network_id="$(cat "${network_id_file}")"
   lxc info "${container_name}" &>/dev/null && return
-  lxc launch \
-    --storage kubedee \
-    --network "${network_id}" \
+  # shellcheck disable=SC2086,SC2154
+  lxc init --storage "${storage_pool}" \
     --config raw.lxc="${raw_lxc_apparmor_allow_incomplete}" \
     "${kubedee_container_image}" "${container_name}"
+  lxc network attach "${network_id}" "${container_name}" eth0 eth0
+  lxc start "${container_name}"
+  kubedee::ensure_machine_id "${container_name}"
 }
 
 # Args:
@@ -967,11 +727,12 @@ kubedee::launch_registry() {
   local network_id
   network_id="$(cat "${network_id_file}")"
   lxc info "${container_name}" &>/dev/null && return
-  lxc launch \
-    --storage kubedee \
-    --network "${network_id}" \
+  lxc init --storage "${storage_pool}" \
     --config raw.lxc="${raw_lxc_apparmor_allow_incomplete}" \
     "${kubedee_container_image}" "${container_name}"
+  lxc network attach "${network_id}" "${container_name}" eth0 eth0
+  lxc start "${container_name}"
+  kubedee::ensure_machine_id "${container_name}"
 }
 
 # Args:
@@ -980,12 +741,10 @@ kubedee::configure_registry() {
   local -r cluster_name="${1}"
   local -r container_name="kubedee-${cluster_name}-registry"
   kubedee::container_wait_running "${container_name}"
-  local ip
-  ip="$(kubedee::container_ipv4_address "${container_name}")"
+  local ip="$(kubedee::container_ipv4_address "${container_name}")"
   kubedee::log_info "Providing files to ${container_name} ..."
 
-  lxc config device add "${container_name}" binary-registry disk source="${kubedee_dir}/clusters/${cluster_name}/rootfs/usr/local/bin/registry" path="/usr/local/bin/registry"
-  lxc config device add "${container_name}" registry-config disk source="${kubedee_dir}/clusters/${cluster_name}/rootfs/etc/docker/registry/" path="/etc/docker/registry/"
+  lxc file push -p "${kubedee_source_dir}/configs/registry/config.yml" "${container_name}/etc/docker/registry/config.yml"
 
   kubedee::log_info "Configuring ${container_name} ..."
   cat <<EOF | lxc exec "${container_name}" bash
@@ -1016,9 +775,6 @@ kubedee::configure_etcd() {
   local ip
   ip="$(kubedee::container_ipv4_address "${container_name}")"
   kubedee::log_info "Providing files to ${container_name} ..."
-
-  lxc config device add "${container_name}" binary-etcd disk source="${kubedee_dir}/clusters/${cluster_name}/rootfs/usr/local/bin/etcd" path="/usr/local/bin/etcd"
-  lxc config device add "${container_name}" binary-etcdctl disk source="${kubedee_dir}/clusters/${cluster_name}/rootfs/usr/local/bin/etcdctl" path="/usr/local/bin/etcdctl"
 
   lxc file push -p "${kubedee_dir}/clusters/${cluster_name}/certificates/"{etcd.pem,etcd-key.pem,ca-etcd.pem} "${container_name}/etc/etcd/"
 
@@ -1075,17 +831,12 @@ kubedee::configure_controller() {
   kubedee::container_wait_running "${container_name}"
   kubedee::log_info "Providing files to ${container_name} ..."
 
-  lxc config device add "${container_name}" binary-kube-apiserver disk source="${kubedee_dir}/clusters/${cluster_name}/rootfs/usr/local/bin/kube-apiserver" path="/usr/local/bin/kube-apiserver"
-  lxc config device add "${container_name}" binary-kube-controller-manager disk source="${kubedee_dir}/clusters/${cluster_name}/rootfs/usr/local/bin/kube-controller-manager" path="/usr/local/bin/kube-controller-manager"
-  lxc config device add "${container_name}" binary-kube-scheduler disk source="${kubedee_dir}/clusters/${cluster_name}/rootfs/usr/local/bin/kube-scheduler" path="/usr/local/bin/kube-scheduler"
-
   lxc file push -p "${kubedee_dir}/clusters/${cluster_name}/certificates/"{kubernetes.pem,kubernetes-key.pem,ca.pem,ca-key.pem,etcd.pem,etcd-key.pem,ca-etcd.pem,ca-aggregation.pem,aggregation-client.pem,aggregation-client-key.pem} "${container_name}/etc/kubernetes/"
 
   lxc file push -p "${kubedee_dir}/clusters/${cluster_name}/kubeconfig/"{kube-controller-manager.kubeconfig,kube-scheduler.kubeconfig} "${container_name}/etc/kubernetes/"
 
   local kubescheduler_config_api_version="kubescheduler.config.k8s.io/v1beta1"
-  local k8s_minor_version
-  k8s_minor_version="$(kubedee::k8s_minor_version "${cluster_name}")"
+  local -r k8s_minor_version="$(lxc exec "${container_name}" -- /usr/local/bin/kubectl version --client -o json | jq -r .clientVersion.minor)"
   if [[ "${k8s_minor_version}" == 16* ]] ||
     [[ "${k8s_minor_version}" == 17* ]]; then
     kubescheduler_config_api_version="kubescheduler.config.k8s.io/v1alpha1"
@@ -1196,7 +947,6 @@ RestartSec=5
 WantedBy=multi-user.target
 KUBE_SCHEDULER_UNIT
 
-
 systemctl daemon-reload
 
 systemctl -q enable kube-apiserver
@@ -1287,8 +1037,7 @@ APISERVER_BINDING
 #   $1 The validated cluster name
 #   $2 The container name
 kubedee::launch_container() {
-  local -r cluster_name="${1}"
-  local -r container_name="${2}"
+  local -r cluster_name="${1}" container_name="${2}" container_cpu="${3:-$(nproc)}" container_memory="${4:-4GiB}"
   lxc info "${container_name}" &>/dev/null && return
   local -r network_id_file="${kubedee_dir}/clusters/${cluster_name}/network_id"
   local network_id
@@ -1300,15 +1049,22 @@ lxc.cgroup.devices.allow=a
 lxc.cap.drop=
 ${raw_lxc_apparmor_allow_incomplete}
 RAW_LXC
-  lxc launch \
-    --storage kubedee \
-    --network "${network_id}" \
+  # shellcheck disable=SC2086,SC2154
+  lxc init ${lxc_init_opts} \
     --profile default \
+    --config limits.cpu=${container_cpu} \
+    --config limits.memory=${container_memory} \
     --config security.privileged=true \
     --config security.nesting=true \
     --config linux.kernel_modules=ip_tables,ip6_tables,netlink_diag,nf_nat,overlay,kvm,vhost-net,vhost-scsi,vhost-vsock,vsock \
     --config raw.lxc="${raw_lxc}" \
-    "${kubedee_container_image}" "${container_name}"
+    "${kubedee_image}" "${container_name}"
+  lxc network attach "${network_id}" "${container_name}" eth0 eth0
+  lxc start "${container_name}"
+  kubedee::ensure_machine_id "${container_name}"
+  until [ -n "$(kubedee::container_ipv4_address "${container_name}")" ]; do
+    sleep 3
+  done
 }
 
 # Args:
@@ -1324,46 +1080,38 @@ kubedee::configure_worker() {
   kubedee::create_kubeconfig_worker "${cluster_name}" "${container_name}"
   kubedee::log_info "Providing files to ${container_name} ..."
 
-  lxc config device add "${container_name}" binary-kubelet disk source="${kubedee_dir}/clusters/${cluster_name}/rootfs/usr/local/bin/kubelet" path="/usr/local/bin/kubelet"
-  lxc config device add "${container_name}" binary-kube-proxy disk source="${kubedee_dir}/clusters/${cluster_name}/rootfs/usr/local/bin/kube-proxy" path="/usr/local/bin/kube-proxy"
-  lxc config device add "${container_name}" binary-kubectl disk source="${kubedee_dir}/clusters/${cluster_name}/rootfs/usr/local/bin/kubectl" path="/usr/local/bin/kubectl"
-
-  lxc config device add "${container_name}" binary-runc disk source="${kubedee_dir}/clusters/${cluster_name}/rootfs/usr/bin/runc" path="/usr/bin/runc"
-
-  lxc config device add "${container_name}" binary-crio disk source="${kubedee_dir}/clusters/${cluster_name}/rootfs/usr/local/bin/crio" path="/usr/local/bin/crio"
-  lxc config device add "${container_name}" binary-conmon disk source="${kubedee_dir}/clusters/${cluster_name}/rootfs/usr/local/bin/conmon" path="/usr/local/bin/conmon"
-  lxc config device add "${container_name}" binary-pinns disk source="${kubedee_dir}/clusters/${cluster_name}/rootfs/usr/local/bin/pinns" path="/usr/local/bin/pinns"
-  lxc config device add "${container_name}" crio-config disk source="${kubedee_dir}/clusters/${cluster_name}/rootfs/etc/crio/" path="/etc/crio/"
+  lxc file push -pr \
+    "${kubedee_source_dir}/configs/crio/crictl.yaml" \
+    "${kubedee_source_dir}/configs/crio/crio-umount.conf" \
+    "${kubedee_source_dir}/configs/crio/policy.json" \
+    "${kubedee_source_dir}/configs/crio/crio.conf" \
+    "${container_name}/etc/crio"
 
   lxc file push -p "${kubedee_dir}/clusters/${cluster_name}/certificates/"{"${container_name}.pem","${container_name}-key.pem",ca.pem} "${container_name}/etc/kubernetes/"
   lxc file push -p "${kubedee_dir}/clusters/${cluster_name}/kubeconfig/"{"${container_name}-kubelet.kubeconfig",kube-proxy.kubeconfig} "${container_name}/etc/kubernetes/"
 
-  lxc config device add "${container_name}" cni-plugins disk source="${kubedee_dir}/clusters/${cluster_name}/rootfs/opt/cni/bin/" path="/opt/cni/bin/"
+  if [[ "$(kubedee::container_type "${container_name}")" == "container" ]]; then
+    # Mount the host loop devices into the container to allow the kubelet
+    # to gather rootfs info when the host root is on a loop device
+    # (e.g. `/dev/mapper/c--vg-root on /dev/loop1 type ext4 ...`)
+    shopt -s nullglob
+    for ldev in /dev/loop[0-9]*; do
+      lxc config device add "${container_name}" "${ldev#/dev/}" unix-block source="${ldev}" path="${ldev}"
+    done
+    shopt -u nullglob
 
-  # Mount the host loop devices into the container to allow the kubelet
-  # to gather rootfs info when the host root is on a loop device
-  # (e.g. `/dev/mapper/c--vg-root on /dev/loop1 type ext4 ...`)
-  shopt -s nullglob
-  for ldev in /dev/loop[0-9]*; do
-    lxc config device add "${container_name}" "${ldev#/dev/}" unix-block source="${ldev}" path="${ldev}"
-  done
-  shopt -u nullglob
-
-  # Mount the host /dev/kmsg device into the container to allow
-  # kubelet's OOM manager to do its job. Otherwise we encounter the
-  # following error:
-  # `Failed to start OOM watcher open /dev/kmsg: no such file or directory`
-  lxc config device add "${container_name}" "kmsg" unix-char source="/dev/kmsg" path="/dev/kmsg"
-
-  # Kata
-  lxc config device add "${container_name}" kata disk source="${kubedee_dir}/clusters/${cluster_name}/rootfs/opt/kata" path="/opt/kata/"
-  lxc config device add "${container_name}" "kvm" unix-char source="/dev/kvm" path="/dev/kvm"
-  lxc config device add "${container_name}" "net-tun" unix-char source="/dev/net/tun" path="/dev/net/tun"
-  lxc config device add "${container_name}" "vhost-net" unix-char source="/dev/vhost-net" path="/dev/vhost-net"
-  lxc config device add "${container_name}" "vhost-scsi" unix-char source="/dev/vhost-scsi" path="/dev/vhost-sci"
-  lxc config device add "${container_name}" "vhost-vsock" unix-char source="/dev/vhost-vsock" path="/dev/vhost-vsock"
-  lxc config device add "${container_name}" "vsock" unix-char source="/dev/vsock" path="/dev/vsock"
-  lxc exec "${container_name}" -- bash -c "ln -s /opt/kata/bin/containerd-shim-kata-v2 /usr/bin/containerd-shim-kata-v2"
+    # Mount the host /dev/kmsg device into the container to allow
+    # kubelet's OOM manager to do its job. Otherwise we encounter the
+    # following error:
+    # `Failed to start OOM watcher open /dev/kmsg: no such file or directory`
+    lxc config device add "${container_name}" "kmsg" unix-char source="/dev/kmsg" path="/dev/kmsg"
+    lxc config device add "${container_name}" "kvm" unix-char source="/dev/kvm" path="/dev/kvm"
+    lxc config device add "${container_name}" "net-tun" unix-char source="/dev/net/tun" path="/dev/net/tun"
+    lxc config device add "${container_name}" "vhost-net" unix-char source="/dev/vhost-net" path="/dev/vhost-net"
+    lxc config device add "${container_name}" "vhost-scsi" unix-char source="/dev/vhost-scsi" path="/dev/vhost-sci"
+    lxc config device add "${container_name}" "vhost-vsock" unix-char source="/dev/vhost-vsock" path="/dev/vhost-vsock"
+    lxc config device add "${container_name}" "vsock" unix-char source="/dev/vsock" path="/dev/vsock"
+  fi
 
   kubedee::log_info "Configuring ${container_name} ..."
   cat <<EOF | lxc exec "${container_name}" bash
@@ -1565,41 +1313,148 @@ kubedee::wait_for_node() {
 
 # Args:
 #   $1 The validated cluster name
-kubedee::prepare_container_image() {
-  local -r cluster_name="${1}"
-  kubedee::log_info "Pruning old kubedee container images ..."
-  for c in $(lxc image list --format json | jq -r '.[].aliases[].name'); do
-    if [[ "${c}" == "kubedee-container-image-"* ]] && ! [[ "${c}" == "${kubedee_container_image}" ]]; then
-      lxc image delete "${c}"
-    fi
-  done
-  lxc image info "${kubedee_container_image}" &>/dev/null && return
-  kubedee::log_info "Preparing kubedee container image ..."
-  lxc delete -f "${kubedee_container_image}-setup" &>/dev/null || true
-  local -r network_id_file="${kubedee_dir}/clusters/${cluster_name}/network_id"
-  local network_id
-  network_id="$(cat "${network_id_file}")"
-  lxc launch \
-    --storage kubedee \
-    --network "${network_id}" \
+#   $2 Image name
+#   $3 Image type
+kubedee::prepare_image() {
+  local -r cluster_name="${1}" image_name="${2:-${kubedee_image}}" image_type="${3:-container}"
+  local -r builder_instance="${image_name}-setup"
+  lxc image info "${image_name}" &>/dev/null && return
+  kubedee::log_info "Preparing kubedee ${image_type} image ..."
+  lxc delete -f "${builder_instance}" &>/dev/null || true
+  local -r network_id="$(cat "${kubedee_dir}/clusters/${cluster_name}/network_id")"
+  # shellcheck disable=SC2086
+  [[ "${image_type}" == "vm" ]] && prep_init_opts="${lxc_init_opts}" || prep_init_opts=""
+  lxc init ${prep_init_opts} \
+    --storage default \
     --config raw.lxc="${raw_lxc_apparmor_allow_incomplete}" \
-    "${kubedee_base_image}" "${kubedee_container_image}-setup"
-  kubedee::container_wait_running "${kubedee_container_image}-setup"
-  cat <<'EOF' | lxc exec "${kubedee_container_image}-setup" bash
-set -euo pipefail
+    --config limits.memory=4GiB \
+    "${kubedee_base_image}" "${builder_instance}"
+  lxc config device set "${builder_instance}" root size="${rootfs_size:-20GiB}"
+  lxc network attach "${network_id}" "${builder_instance}" eth0 eth0
+  lxc start "${builder_instance}"
+  kubedee::container_wait_running "${builder_instance}"
 
+  # system dependencies
+  cat <<EOF | lxc exec "${builder_instance}" -- bash
+set -eo pipefail
 export DEBIAN_FRONTEND=noninteractive
 apt-get update
 
 # crio requires libgpgme11
 # helm requires socat
-apt-get install -y libgpgme11 socat
+apt-get install -y curl iptables libgpgme11 socat tzdata
 
-rm -rf /var/cache/apt
+## build dependencies
+apt-get install -y --no-install-recommends \
+  build-essential \
+  libglib2.0-dev \
+  libseccomp-dev \
+  libsystemd-dev \
+  make \
+  pkg-config
+curl -sSL 'https://dl.google.com/go/go${kubedee_go_version}.linux-amd64.tar.gz' | tar -xzC /usr/local
+export GOCACHE=/tmp/go-cache GOPATH=/go PATH="\${PATH}:/usr/local/go/bin"
+
+# cri-o
+mkdir -p \${GOPATH}/src/github.com/cri-o/cri-o
+cd \${GOPATH}/src/github.com/cri-o/cri-o
+curl -sSL https://github.com/cri-o/cri-o/archive/${kubedee_crio_version}.tar.gz | tar --strip-components 1 -xzC \${GOPATH}/src/github.com/cri-o/cri-o
+make clean
+make
+cp bin/* /usr/local/bin
+
+# conmon
+mkdir -p \${GOPATH}/src/github.com/containers/conmon
+cd \${GOPATH}/src/github.com/containers/conmon
+curl -sSL https://github.com/containers/conmon/archive/${kubedee_conmon_version}.tar.gz | tar --strip-components 1 -xzC \${GOPATH}/src/github.com/containers/conmon
+make clean
+make
+cp bin/conmon /usr/local/bin
+
+# registry
+mkdir -p \${GOPATH}/src/github.com/docker/distribution
+cd \${GOPATH}/src/github.com/docker/distribution
+curl -sSL https://github.com/docker/distribution/archive/${kubedee_registry_version}.tar.gz | tar --strip-components 1 -xzC \${GOPATH}/src/github.com/docker/distribution
+go get -v -d
+make
+cp bin/registry /usr/local/bin
+
+# runc
+mkdir -p \${GOPATH}/src/github.com/opencontainers/runc
+cd \${GOPATH}/src/github.com/opencontainers/runc
+curl -sSL https://github.com/opencontainers/runc/releases/download/${kubedee_runc_version}/runc.tar.xz | tar --strip-components 1 -xJC \${GOPATH}/src/github.com/opencontainers/runc
+make clean
+make
+cp runc /usr/local/bin
+
+## cleanup
+cd /tmp
+apt-get remove -y --auto-remove \
+  build-essential \
+  libglib2.0-dev \
+  libseccomp-dev \
+  libsystemd-dev \
+  make \
+  pkg-config
+rm -rf \${GOPATH} /usr/local/go
+
+## fetch prebuilts
+# etcd
+curl -fsSL "https://github.com/etcd-io/etcd/releases/download/${kubedee_etcd_version}/etcd-${kubedee_etcd_version}-linux-amd64.tar.gz" | tar -xzC /usr/local/bin --strip-components 1 etcd-${kubedee_etcd_version}-linux-amd64/{etcdctl,etcd} ||:
+
+# cni
+mkdir -p /opt/cni/bin
+curl -fsSL https://github.com/containernetworking/plugins/releases/download/${kubedee_cni_plugins_version}/cni-plugins-linux-amd64-${kubedee_cni_plugins_version}.tgz | tar -xzC /opt/cni/bin
+
+# kata
+curl -fsSL https://github.com/kata-containers/kata-containers/releases/download/${kubedee_kata_version}/kata-static-${kubedee_kata_version}-x86_64.tar.xz | tar -xJC / ||:
+#curl -fsSL https://github.com/kata-containers/runtime/releases/download/${kubedee_kata_version}/kata-static-${kubedee_kata_version}-x86_64.tar.xz | tar -xJC / ||:
+ln -s /opt/kata/bin/containerd-shim-kata-v2 /usr/local/bin/containerd-shim-kata-v2
+
+# yank out snap
+SNAPS=(\$(snap list | tail -n+2 | awk '{print \$1}')) ||:
+until [ -z "\${SNAPS}" ]; do
+  for i in \${SNAPS[@]}; do
+    snap remove --purge \${i} ||:
+  done
+  SNAPS=(\$(snap list | tail -n+2 | awk '{print \$1}')) ||:
+done
+apt-get purge -y snapd ||:
+
+# yank out cloud-init
+apt-get purge -y \$(dpkg -l | awk '/^ii\s*cloud-/ {print \$2}') ||:
+rm -rf /var/lib/cloud/
+
+rm -rf /var/cache/apt /etc/machine-id /var/lib/systemd/random-seed
 EOF
-  lxc snapshot "${kubedee_container_image}-setup" snap
-  lxc publish "${kubedee_container_image}-setup/snap" --alias "${kubedee_container_image}" kubedee-version="${kubedee_version}"
-  lxc delete -f "${kubedee_container_image}-setup"
+
+  # shellcheck disable=SC2154
+  if [[ -n "${kubernetes_version}" ]]; then
+    cat <<EOF | lxc exec "${builder_instance}" -- bash
+cd /usr/local/bin
+curl -fsSL -o- 'https://dl.k8s.io/${kubernetes_version}/kubernetes-server-linux-amd64.tar.gz' | \\
+tar -xz --strip-components 3 kubernetes/server/bin/{kube-apiserver,kube-controller-manager,kubectl,kubelet,kube-proxy,kube-scheduler}
+EOF
+  else
+    # shellcheck disable=SC2154
+    lxc file push -pr \
+      "${bin_dir}/kube-apiserver" \
+      "${bin_dir}/kube-controller-manager" \
+      "${bin_dir}/kubectl" \
+      "${bin_dir}/kubelet" \
+      "${bin_dir}/kube-proxy" \
+      "${bin_dir}/kube-scheduler" \
+      "${builder_instance}/usr/local/bin"
+  fi
+
+  if [[ "${image_type}" == "vm" ]]; then
+    kubedee::fixup_network_ifaces "${builder_instance}"
+  fi
+
+  lxc stop "${builder_instance}"
+  lxc snapshot "${builder_instance}" snap
+  lxc publish "${builder_instance}/snap" --alias "${image_name}" kubedee-version="${kubedee_version}"
+  lxc delete -f "${builder_instance}" || lxc network detach "${network_id}" "${builder_instance}"
 }
 
 # Args:
