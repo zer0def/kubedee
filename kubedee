@@ -46,6 +46,7 @@ worker_limits_memory="4GiB"
 storage_pool="kubedee"
 rootfs_size="24GiB"
 enable_insecure_registry="false"
+enable_kata="false"
 
 # shellcheck source=/dev/null
 source "${kubedee_source_dir}/lib.bash"
@@ -87,7 +88,8 @@ Options:
   --worker-limits-memory <amount>                       set worker container/VM \`limits.memory\` (default: ${worker_limits_memory})
   --storage-pool <pool_name>                            set LXD storage pool (default: ${storage_pool})
   --rootfs-size <size>                                  set LXD VM rootfs volume size (default: ${rootfs_size})
-  --enable-insecure-registry                            launch insecure OCI image registry in cluster network
+  --enable-insecure-registry                            launch insecure OCI image registry in cluster network (default: ${enable_insecure_registry})
+  --enable-kata                                         apply Kata Containers runtime claases (default: ${enable_kata})
 USAGE
   exit 1
 }
@@ -157,6 +159,7 @@ cmd_start() {
   kubedee::deploy_flannel "${cluster_name}"
   kubedee::deploy_core_dns "${cluster_name}"
   kubedee::deploy_metrics_server "${cluster_name}"
+  [[ "${enable_kata}" = "true" ]] && kubedee::deploy_kata_runtimes "${cluster_name}"
   kubedee::wait_for_node "${cluster_name}" "kubedee-${cluster_name}-controller"
   kubedee::label_and_taint_controller "${cluster_name}" "kubedee-${cluster_name}-controller"
   for ((i = 0; i < num_worker; i++)); do
@@ -372,6 +375,10 @@ main() {
       ;;
     --enable-insecure-registry)
       enable_insecure_registry="true"
+      shift
+      ;;
+    --enable-kata)
+      enable_kata="true"
       shift
       ;;
     help | -h | --help)
