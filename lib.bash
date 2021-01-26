@@ -81,6 +81,7 @@ readonly kubedee_flannel_cni_plugin_version="v1.0.0"
 readonly kubedee_crio_version="v1.20.0"
 readonly kubedee_go_version="1.17.5"
 readonly kubedee_conmon_version="v2.0.31"
+readonly kubedee_kata_version="2.3.1"
 
 readonly lxd_status_code_running=103
 
@@ -100,7 +101,7 @@ kubedee::vm_fixups() {
   local -r distro="$(lxc exec "${container_name}" -- awk -F= '/^ID=/ {print $NF}' /etc/os-release)"
 
   # shellcheck disable=SC2016
-  until lxc exec "${container_name}" -- bash ${KUBEDEE_DEBUG:+-x} -c 'sed -i "s/\(^[[:space:]]*linux.*\)/\1 net.ifnames=0/g" $(find /boot -iname grub.cfg)' &>/dev/null; do
+  until lxc exec "${container_name}" -- bash ${KUBEDEE_DEBUG:+-x} -c 'sed -i "s/\(^[[:space:]]*linux.*\)/\1 net.ifnames=0 systemd.unified_cgroup_hierarchy=0 amd_iommu=on intel_iommu=on kvm-intel.nested=1 kvm-amd.nested=1 kvm.ignore_msrs=1 iommu=pt/g" $(find /boot -iname grub.cfg)' &>/dev/null; do
     sleep 3
   done
   case "${distro}" in
@@ -109,6 +110,16 @@ kubedee::vm_fixups() {
     debian) lxc exec "${container_name}" -- sed -i "s/${iface_src}/${iface_dest}/g" /etc/network/interfaces ;;
     ubuntu) lxc exec "${container_name}" -- bash ${KUBEDEE_DEBUG:+-x} -c "sed -i 's/${iface_src}/${iface_dest}/g' /etc/netplan/*" ;;
   esac
+  lxc exec "${container_name}" -- bash ${KUBEDEE_DEBUG:+-x} <<'EOF'
+cat <<EOD > /etc/modules-load.d/kata.conf
+kvm
+vfio
+vhost-net
+vhost-scsi
+vhost-vsock
+vsock
+EOD
+EOF
   lxc stop --timeout 60 "${container_name}" || lxc stop --force "${container_name}" ||:
   lxc start "${container_name}"
   until lxc exec "${container_name}" -- bash ${KUBEDEE_DEBUG:+-x} -c '[ ! -e /run/nologin ]' &>/dev/null; do
@@ -1166,6 +1177,12 @@ kubedee::configure_worker() {
     # following error:
     # `Failed to start OOM watcher open /dev/kmsg: no such file or directory`
     lxc config device add "${container_name}" "kmsg" unix-char source="/dev/kmsg" path="/dev/kmsg"
+    lxc config device add "${container_name}" "kvm" unix-char source="/dev/kvm" path="/dev/kvm"
+    lxc config device add "${container_name}" "net-tun" unix-char source="/dev/net/tun" path="/dev/net/tun"
+    lxc config device add "${container_name}" "vhost-net" unix-char source="/dev/vhost-net" path="/dev/vhost-net"
+    lxc config device add "${container_name}" "vhost-scsi" unix-char source="/dev/vhost-scsi" path="/dev/vhost-sci"
+    lxc config device add "${container_name}" "vhost-vsock" unix-char source="/dev/vhost-vsock" path="/dev/vhost-vsock"
+    lxc config device add "${container_name}" "vsock" unix-char source="/dev/vsock" path="/dev/vsock"
   fi
 
   kubedee::log_info "Configuring ${container_name} ..."
@@ -1199,6 +1216,8 @@ cat >/etc/systemd/system/crio.service <<'CRIO_UNIT'
 Description=CRI-O daemon
 
 [Service]
+ExecStartPre=/usr/bin/mkdir -p /run/kata-containers/shared/sandboxes
+ExecStartPre=/usr/bin/mount --bind --make-rshared /run/kata-containers/shared/sandboxes /run/kata-containers/shared/sandboxes
 ExecStart=/usr/local/bin/crio
 Restart=always
 RestartSec=10s
@@ -1333,6 +1352,15 @@ kubedee::deploy_metrics_server() {
   local -r manifest="${kubedee_source_dir}/manifests/metrics-server.yml"
   kubedee::log_info "Deploy metrics server ..."
   kubectl --kubeconfig "${kubedee_dir}/clusters/${cluster_name}/kubeconfig/admin.kubeconfig" apply -f "${manifest}"
+}
+
+# Args:
+#   $1 The validated cluster name
+kubedee::deploy_kata_runtimes() {
+  local -r cluster_name="${1}"
+  local -r kata_manifest="${kubedee_source_dir}/manifests/kata-runtime-classes.yml"
+  kubedee::log_info "Deploy Kata-Containers runtime classes ..."
+  kubectl --kubeconfig "${kubedee_dir}/clusters/${cluster_name}/kubeconfig/admin.kubeconfig" apply -f "${kata_manifest}"
 }
 
 # Args:
@@ -1521,6 +1549,11 @@ mkdir -p /opt/cni/bin
 curl -fsSL https://github.com/containernetworking/plugins/releases/download/${kubedee_cni_plugins_version}/cni-plugins-linux-${sys_arch}-${kubedee_cni_plugins_version}.tgz | tar -xzC /opt/cni/bin
 curl -fsSLo /opt/cni/bin/flannel https://github.com/flannel-io/cni-plugin/releases/download/${kubedee_flannel_cni_plugin_version}/flannel-${sys_arch}
 chmod +x /opt/cni/bin/flannel
+
+# kata
+[ "$(uname -m)" != "x86_64" ] || curl -fsSL https://github.com/kata-containers/kata-containers/releases/download/${kubedee_kata_version}/kata-static-${kubedee_kata_version}-$(uname -m).tar.xz | tar -xJC /
+#[ "$(uname -m)" != "x86_64" ] || curl -fsSL https://github.com/kata-containers/runtime/releases/download/${kubedee_kata_version}/kata-static-${kubedee_kata_version}-$(uname -m).tar.xz | tar -xJC /
+ln -s /opt/kata/bin/containerd-shim-kata-v2 /usr/local/bin/containerd-shim-kata-v2
 
 rm -rf /var/cache/apt /etc/machine-id /var/lib/systemd/random-seed
 useradd -ms /bin/bash kubedee
