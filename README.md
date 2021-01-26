@@ -2,7 +2,7 @@
 
 [![builds.sr.ht status](https://builds.sr.ht/~schu/kubedee.svg)](https://builds.sr.ht/~schu/kubedee?)
 
-Fast multi-node Kubernetes (>= 1.18) development and test clusters on [LXD](https://github.com/lxc/lxd).
+Fast multi-node Kubernetes (>= 1.19) development and test clusters on [LXD](https://github.com/lxc/lxd).
 
 Under the hood, [CRI-O](https://github.com/kubernetes-incubator/cri-o) is used
 as container runtime and [Flannel](https://github.com/coreos/flannel) for
