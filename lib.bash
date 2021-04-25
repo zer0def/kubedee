@@ -93,12 +93,12 @@ fi
 
 # Args:
 #   $1 The full container name
-kubedee::fixup_network_ifaces() {
+kubedee::vm_fixups() {
   local -r container_name="${1}" iface_src="enp5s0" iface_dest="eth0"
   local -r distro="$(lxc exec "${container_name}" -- awk -F= '/^ID=/ {print $NF}' /etc/os-release)"
 
   # shellcheck disable=SC2016
-  until lxc exec "${container_name}" -- bash ${KUBEDEE_DEBUG:+-x} -c 'sed -i "s/\(^[[:space:]]*linux.*\)/\1 net.ifnames=0/g" $(find /boot -iname grub.cfg)' &>/dev/null; do
+  until lxc exec "${container_name}" -- bash ${KUBEDEE_DEBUG:+-x} -c 'sed -i "s/\(^[[:space:]]*linux.*\)/\1 net.ifnames=0 systemd.unified_cgroup_hierarchy=0/g" $(find /boot -iname grub.cfg)' &>/dev/null; do
     sleep 3
   done
   case "${distro}" in
@@ -1073,6 +1073,7 @@ kubedee::launch_container() {
   read -r -d '' raw_lxc <<RAW_LXC || true
 ${raw_lxc_apparmor_profile}
 lxc.mount.auto=proc:rw sys:rw cgroup:rw
+lxc.init.cmd=/sbin/init systemd.unified_cgroup_hierarchy=0
 lxc.cgroup.devices.allow=a
 lxc.cap.drop=
 ${raw_lxc_apparmor_allow_incomplete}
@@ -1198,6 +1199,7 @@ authentication:
     clientCAFile: "/etc/kubernetes/ca.pem"
 authorization:
   mode: Webhook
+cgroupDriver: systemd
 clusterDomain: "cluster.local"
 clusterDNS:
   - "10.32.0.10"
@@ -1230,13 +1232,11 @@ Requires=crio.service
 
 [Service]
 ExecStart=/usr/local/bin/kubelet \\
-  --cgroup-driver=systemd \\
   --config=/etc/kubernetes/config/kubelet.yaml \\
   --container-runtime=remote \\
   --container-runtime-endpoint=unix:///var/run/crio/crio.sock \\
   --image-service-endpoint=unix:///var/run/crio/crio.sock \\
   --kubeconfig=/etc/kubernetes/${container_name}-kubelet.kubeconfig \\
-  --network-plugin=cni \\
   --register-node=true \\
   --v=2
 Restart=on-failure
@@ -1504,7 +1504,7 @@ EOF
   fi
 
   if [[ "${image_type}" == "vm" ]]; then
-    kubedee::fixup_network_ifaces "${builder_instance}"
+    kubedee::vm_fixups "${builder_instance}"
   fi
 
   lxc stop "${builder_instance}"
