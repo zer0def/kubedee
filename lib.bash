@@ -56,12 +56,14 @@ kubedee::exit_error() {
 
 readonly kubedee_base_image="ubuntu:20.04"
 readonly kubedee_container_image="kubedee-container-image-${kubedee_version//[._]/-}"
-readonly kubedee_etcd_version="v3.4.14"
-readonly kubedee_runc_version="v1.0.0-rc93"
+readonly kubedee_etcd_version="v3.4.16"
+readonly kubedee_runc_version="v1.0.0-rc95"
 readonly kubedee_cni_plugins_version="v0.9.1"
-readonly kubedee_crio_version="v1.20.0"
+readonly kubedee_crio_version="v1.21.0"
 readonly kubedee_registry_version="v2.7.1"
 readonly kubedee_kata_version="2.1.0"
+readonly kubedee_go_version="1.15.12"
+readonly kubedee_conmon_version="v2.0.27"
 
 readonly lxd_status_code_running=103
 
