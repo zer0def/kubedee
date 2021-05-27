@@ -1339,16 +1339,6 @@ EOF
 
 # Args:
 #   $1 The validated cluster name
-kubedee::deploy_pod_security_policies() {
-  local -r cluster_name="${1}"
-  kubedee::log_info "Deploying default pod security policies ..."
-  local -r psp_manifest="${kubedee_source_dir}/manifests/pod-security-policies.yml"
-  kubectl --kubeconfig "${kubedee_dir}/clusters/${cluster_name}/kubeconfig/admin.kubeconfig" \
-    apply -f "${psp_manifest}"
-}
-
-# Args:
-#   $1 The validated cluster name
 kubedee::deploy_flannel() {
   local -r cluster_name="${1}"
   kubedee::log_info "Deploying flannel ..."

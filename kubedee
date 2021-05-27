@@ -32,7 +32,6 @@ apiserver_extra_hostnames=""
 bin_dir="./_output/bin"
 create_admin_sa="false"
 create_user_sa="false"
-install_psps=""
 kubedee_dir="${kubedee_dir:-${HOME}/.local/share/kubedee}"
 kubedee_cache_dir="${kubedee_dir}/cache/${kubedee_version}"
 kubernetes_version=""
@@ -138,9 +137,6 @@ cmd_start() {
   done
   kubedee::create_kubeconfig_admin "${cluster_name}"
   kubedee::configure_rbac "${cluster_name}"
-  if [[ "${install_psps}" == "true" ]]; then
-    kubedee::deploy_pod_security_policies "${cluster_name}"
-  fi
   kubedee::deploy_flannel "${cluster_name}"
   kubedee::deploy_core_dns "${cluster_name}"
   kubedee::wait_for_node "${cluster_name}" "kubedee-${cluster_name}-controller"
@@ -290,10 +286,6 @@ main() {
       kubedee_dir="${2}"
       kubedee_cache_dir="${kubedee_dir}/cache/${kubedee_version}"
       shift
-      shift
-      ;;
-    --install-psps)
-      install_psps="true"
       shift
       ;;
     --kubernetes-version)
