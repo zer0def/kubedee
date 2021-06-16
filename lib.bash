@@ -453,6 +453,10 @@ kubedee::create_certificate_kubernetes() {
   local -r target_dir="${kubedee_dir}/clusters/${cluster_name}/certificates"
   local -r container_name="kubedee-${cluster_name}-controller"
   kubedee::container_wait_running "${container_name}"
+
+  local -r cluster_svcnet_prefix_file="${kubedee_dir}/clusters/${cluster_name}/svcnet_prefix"
+  echo "10.$((${RANDOM}%256)).$((${RANDOM}%256))" > "${cluster_svcnet_prefix_file}"
+
   local ip
   ip="$(kubedee::container_ipv4_address "kubedee-${cluster_name}-controller")"
   [[ -z "${ip}" ]] && kubedee::exit_error "Failed to get IPv4 for kubedee-${cluster_name}-controller"
@@ -460,7 +464,7 @@ kubedee::create_certificate_kubernetes() {
   (
     kubedee::cd_or_exit_error "${target_dir}"
     kubedee::log_info "Generating controller certificate ..."
-    cat <<EOF | cfssl gencert -ca=ca.pem -ca-key=ca-key.pem -config=ca-config.json -profile=kubernetes -hostname="10.32.0.1,${ip},127.0.0.1${apiserver_extra_hostnames}" - | cfssljson -bare kubernetes
+    cat <<EOF | cfssl gencert -ca=ca.pem -ca-key=ca-key.pem -config=ca-config.json -profile=kubernetes -hostname="$(cat "${cluster_svcnet_prefix_file}").1,${ip},127.0.0.1${apiserver_extra_hostnames}" - | cfssljson -bare kubernetes
 {
   "CN": "kubernetes",
   "key": {
@@ -873,6 +877,11 @@ kubedee::configure_controller() {
     kubescheduler_config_api_version="kubescheduler.config.k8s.io/v1alpha2"
   fi
 
+  local -r cluster_podnet_file="${kubedee_dir}/clusters/${cluster_name}/podnet"
+  echo "10.$((${RANDOM}%256)).0.0/16" > "${cluster_podnet_file}"
+
+  local -r cluster_svcnet_prefix_file="${kubedee_dir}/clusters/${cluster_name}/svcnet_prefix"
+
   kubedee::log_info "Configuring ${container_name} ..."
   cat <<EOF | lxc exec "${container_name}" bash
 set -euo pipefail
@@ -906,7 +915,7 @@ ExecStart=/usr/local/bin/kube-apiserver \\
   --service-account-signing-key-file=/etc/kubernetes/ca-key.pem \\
   --service-account-api-audiences=kubernetes.default.svc \\
   --service-account-key-file=/etc/kubernetes/ca-key.pem \\
-  --service-cluster-ip-range=10.32.0.0/24 \\
+  --service-cluster-ip-range=$(cat "${cluster_svcnet_prefix_file}").0/24 \\
   --service-node-port-range=30000-32767 \\
   --tls-cert-file=/etc/kubernetes/kubernetes.pem \\
   --tls-private-key-file=/etc/kubernetes/kubernetes-key.pem \\
@@ -932,7 +941,7 @@ Documentation=https://github.com/GoogleCloudPlatform/kubernetes
 [Service]
 ExecStart=/usr/local/bin/kube-controller-manager \\
   --allocate-node-cidrs=true \\
-  --cluster-cidr=10.244.0.0/16 \\
+  --cluster-cidr=$(cat "${cluster_podnet_file}") \\
   --cluster-name=kubernetes \\
   --cluster-signing-cert-file=/etc/kubernetes/ca.pem \\
   --cluster-signing-key-file=/etc/kubernetes/ca-key.pem \\
@@ -940,7 +949,7 @@ ExecStart=/usr/local/bin/kube-controller-manager \\
   --leader-elect=true \\
   --root-ca-file=/etc/kubernetes/ca.pem \\
   --service-account-private-key-file=/etc/kubernetes/ca-key.pem \\
-  --service-cluster-ip-range=10.32.0.0/24 \\
+  --service-cluster-ip-range=$(cat "${cluster_svcnet_prefix_file}").0/24 \\
   --use-service-account-credentials=true \\
   --v=2
 Restart=on-failure
@@ -1103,6 +1112,7 @@ kubedee::configure_worker() {
   local -r cluster_name="${1}"
   local -r container_name="${2}"
   local -r registry_ip="$(kubedee::container_ipv4_address "kubedee-${cluster_name}-registry")"
+  local -r cluster_svcnet_prefix_file="${kubedee_dir}/clusters/${cluster_name}/svcnet_prefix"
 
   kubedee::container_wait_running "${container_name}"
   kubedee::create_certificate_worker "${cluster_name}" "${container_name}"
@@ -1202,7 +1212,7 @@ authorization:
 cgroupDriver: systemd
 clusterDomain: "cluster.local"
 clusterDNS:
-  - "10.32.0.10"
+  - "$(cat "${cluster_svcnet_prefix_file}").10"
 podCIDR: "10.20.0.0/16"
 runtimeRequestTimeout: "10m"
 tlsCertFile: "/etc/kubernetes/${container_name}.pem"
@@ -1289,14 +1299,19 @@ kubedee::deploy_flannel() {
   for i in "${supported_arches[@]}"; do
     SYS_ARCH=${i} envsubst <"${flannel_ds_template}" | "${_kubectl}" --kubeconfig "${kubedee_dir}/clusters/${cluster_name}/kubeconfig/admin.kubeconfig" apply -f -
   done
+
+  local -r cluster_podnet_file="${kubedee_dir}/clusters/${cluster_name}/podnet"
+  local -r flannel_cfg_template="${kubedee_source_dir}/manifests/kube-flannel-cfg.yml.tpl"
+  PODNET_CIDR="$(cat "${cluster_podnet_file}")" envsubst <"${flannel_cfg_template}" | "${_kubectl}" --kubeconfig "${kubedee_dir}/clusters/${cluster_name}/kubeconfig/admin.kubeconfig" apply -f -
 }
 
 # Args:
 #   $1 The validated cluster name
 kubedee::deploy_core_dns() {
   local -r cluster_name="${1}"
+  local -r cluster_svcnet_prefix_file="${kubedee_dir}/clusters/${cluster_name}/svcnet_prefix"
   kubedee::log_info "Deploying core-dns ..."
-  SYS_ARCH=${sys_arch} envsubst <"${kubedee_source_dir}/manifests/core-dns.yml.tpl" | "${_kubectl}" --kubeconfig "${kubedee_dir}/clusters/${cluster_name}/kubeconfig/admin.kubeconfig" apply -f -
+  SVCNET_PREFIX="$(cat "${cluster_svcnet_prefix_file}")" SYS_ARCH=${sys_arch} envsubst <"${kubedee_source_dir}/manifests/core-dns.yml.tpl" | "${_kubectl}" --kubeconfig "${kubedee_dir}/clusters/${cluster_name}/kubeconfig/admin.kubeconfig" apply -f -
 }
 
 # Args:
