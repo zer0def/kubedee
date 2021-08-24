@@ -99,7 +99,7 @@ subjects:
   name: flannel
   namespace: kube-system
 - kind: ServiceAccount
-  name: kube-dns
+  name: coredns
   namespace: kube-system
 
 ---
