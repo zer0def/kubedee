@@ -152,6 +152,7 @@ cmd_start() {
   fi
   kubedee::deploy_flannel "${cluster_name}"
   kubedee::deploy_core_dns "${cluster_name}"
+  kubedee::deploy_metrics_server "${cluster_name}"
   kubedee::wait_for_node "${cluster_name}" "kubedee-${cluster_name}-controller"
   kubedee::label_and_taint_controller "${cluster_name}" "kubedee-${cluster_name}-controller"
   for ((i = 0; i < num_worker; i++)); do
