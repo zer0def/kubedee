@@ -101,8 +101,20 @@ spec:
       tolerations:
         - key: "CriticalAddonsOnly"
           operator: "Exists"
-      nodeSelector:
-        beta.kubernetes.io/os: linux
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: beta.kubernetes.io/os
+                operator: In
+                values:
+                - linux
+            - matchExpressions:
+              - key: kubernetes.io/os
+                operator: In
+                values:
+                - linux
       containers:
       - name: coredns
         image: coredns/coredns

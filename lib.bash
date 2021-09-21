@@ -1255,6 +1255,15 @@ kubedee::deploy_core_dns() {
 
 # Args:
 #   $1 The validated cluster name
+kubedee::deploy_metrics_server() {
+  local -r cluster_name="${1}"
+  local -r manifest="${kubedee_source_dir}/manifests/metrics-server.yml"
+  kubedee::log_info "Deploy metrics server ..."
+  kubectl --kubeconfig "${kubedee_dir}/clusters/${cluster_name}/kubeconfig/admin.kubeconfig" apply -f "${manifest}"
+}
+
+# Args:
+#   $1 The validated cluster name
 #   $2 The name of the controller node
 kubedee::label_and_taint_controller() {
   local -r cluster_name="${1}"
