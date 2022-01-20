@@ -77,17 +77,17 @@ case "$(uname -m)" in
 esac
 
 readonly kubedee_base_image="images:debian/bookworm/${lxc_arch}"
-readonly kubedee_etcd_version="v3.4.14"
-readonly kubedee_runc_version="v1.0.0-rc93"
-readonly kubedee_cni_plugins_version="v0.9.1"
-readonly kubedee_crio_version="v1.20.0"
-readonly kubedee_go_version="1.17.5"
-readonly kubedee_conmon_version="v2.0.31"
-readonly kubedee_kata_version="2.3.1"
+readonly kubedee_etcd_version="v3.5.18"
+readonly kubedee_runc_version="v1.2.5"
+readonly kubedee_cni_plugins_version="v1.6.2"
+readonly kubedee_crio_version="v1.32.1"
+readonly kubedee_go_version="1.23.5"
+readonly kubedee_conmon_version="v2.1.12"
+readonly kubedee_kata_version="2.5.2"
 
 readonly lxd_status_code_running=103
 
-readonly lxc_driver_version="$("${_lxc}" info | awk '/[:space:]*driver_version/ {print $2}')"
+readonly lxc_driver_version="$("${_lxc}" info | awk '/[[:space:]]*driver_version/ {print $2}')"
 if [[ "${lxc_driver_version}" == 2* ]]; then
   readonly raw_lxc_apparmor_profile="lxc.aa_profile=unconfined"
   readonly raw_lxc_apparmor_allow_incomplete="lxc.aa_allow_incomplete=1"
@@ -1468,7 +1468,7 @@ kubedee::prepare_image() {
 set -euo pipefail
 DEBIAN_FRONTEND=noninteractive apt-get -y install cloud-init lvm2 open-iscsi zram-tools
 InitiatorName=$(iscsi-iname) > /etc/iscsi/initiatorname.iscsi
-growpart /dev/sda 2
+growpart /dev/sda 2 ||:
 resize2fs /dev/sda2
 systemctl enable zramswap
 EOF
