@@ -77,13 +77,13 @@ case "$(uname -m)" in
 esac
 
 readonly kubedee_base_image="images:debian/bookworm/${lxc_arch}"
-readonly kubedee_etcd_version="v3.4.14"
-readonly kubedee_runc_version="v1.0.0-rc93"
-readonly kubedee_cni_plugins_version="v0.9.1"
-readonly kubedee_crio_version="v1.20.0"
-readonly kubedee_go_version="1.17.5"
-readonly kubedee_conmon_version="v2.0.31"
-readonly kubedee_kata_version="2.3.1"
+readonly kubedee_etcd_version="v3.5.14"
+readonly kubedee_runc_version="v1.1.13"
+readonly kubedee_cni_plugins_version="v1.5.1"
+readonly kubedee_crio_version="v1.30.2"
+readonly kubedee_go_version="1.22.4"
+readonly kubedee_conmon_version="v2.1.12"
+readonly kubedee_kata_version="2.5.2"
 
 readonly lxd_status_code_running=103
 
