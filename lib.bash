@@ -94,6 +94,13 @@ else
   readonly raw_lxc_apparmor_allow_incomplete="lxc.apparmor.allow_incomplete=1"
 fi
 
+kubedee::restart_container() {
+  local -r container_name="${1}"
+  until lxc exec "${container_name}" -- bash ${KUBEDEE_DEBUG:+-x} -c '[ ! -e /run/nologin ]' &>/dev/null; do
+    sleep 3
+  done
+}
+
 # Args:
 #   $1 The full container name
 kubedee::vm_fixups() {
@@ -107,8 +114,8 @@ kubedee::vm_fixups() {
   case "${distro}" in
     *suse*) lxc exec "${container_name}" -- mv "/etc/sysconfig/network/ifcfg-${iface_src}" "/etc/sysconfig/network/ifcfg-${iface_dest}";;
     arch) lxc exec "${container_name}" -- bash ${KUBEDEE_DEBUG:+-x} -c "sed -i 's/${iface_src}/${iface_dest}/g' '/etc/systemd/network/${iface_src}.network' && mv '/etc/systemd/network/${iface_src}.network' '/etc/systemd/network/${iface_dest}.network'";;
-    debian) lxc exec "${container_name}" -- sed -i "s/${iface_src}/${iface_dest}/g" /etc/network/interfaces ;;
-    ubuntu) lxc exec "${container_name}" -- bash ${KUBEDEE_DEBUG:+-x} -c "sed -i 's/${iface_src}/${iface_dest}/g' /etc/netplan/*" ;;
+    debian) lxc exec "${container_name}" -- bash ${KUBEDEE_DEBUG:+-x} -c ". /etc/os-release; [ -z \"\${VERSION_ID}\" ] || [ \"\${VERSION_ID:-69420}\" -gt 11 ] || sed -i 's/${iface_src}/${iface_dest}/g' /etc/network/interfaces" ;;
+    ubuntu) lxc exec "${container_name}" -- bash ${KUBEDEE_DEBUG:+-x} -c "ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf; sed -i 's/${iface_src}/${iface_dest}/g' /etc/netplan/*" ;;
   esac
   lxc exec "${container_name}" -- bash ${KUBEDEE_DEBUG:+-x} <<'EOF'
 cat <<EOD > /etc/modules-load.d/kata.conf
@@ -122,9 +129,7 @@ EOD
 EOF
   lxc stop --timeout 60 "${container_name}" || lxc stop --force "${container_name}" ||:
   lxc start "${container_name}"
-  until lxc exec "${container_name}" -- bash ${KUBEDEE_DEBUG:+-x} -c '[ ! -e /run/nologin ]' &>/dev/null; do
-    sleep 3
-  done
+  kubedee::restart_container "${container_name}"
 }
 
 # Args:
@@ -137,9 +142,7 @@ kubedee::ensure_machine_id() {
   done
   lxc stop --timeout 60 "${container_name}" || lxc stop --force "${container_name}" ||:
   lxc start "${container_name}"
-  until lxc exec "${container_name}" -- bash ${KUBEDEE_DEBUG:+-x} -c '[ ! -e /run/nologin ]' &>/dev/null; do
-    sleep 3
-  done
+  kubedee::restart_container "${container_name}"
 }
 
 kubedee::manage_profiles(){
@@ -942,7 +945,6 @@ ExecStart=/usr/local/bin/kube-apiserver \\
   --bind-address=0.0.0.0 \\
   --client-ca-file=/etc/kubernetes/ca.pem \\
   --enable-admission-plugins=${admission_plugins} \\
-  --enable-swagger-ui=true \\
   --etcd-cafile=/etc/kubernetes/ca-etcd.pem \\
   --etcd-certfile=/etc/kubernetes/etcd.pem \\
   --etcd-keyfile=/etc/kubernetes/etcd-key.pem \\
@@ -1262,7 +1264,7 @@ KUBELET_CONFIG
 # Another hotfix attempt for the bug ^^^ as setting
 # resolverConfig for the kubelet doesn't seem to work
 # with cri-o
-#ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf
+ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf  # ubuntu-specific?
 
 cat >/etc/systemd/system/kubelet.service <<'KUBELET_UNIT'
 [Unit]
@@ -1583,7 +1585,7 @@ EOF
     kubedee::vm_fixups "${builder_instance}"
   fi
 
-  lxc stop "${builder_instance}"
+  lxc stop --timeout 60 "${builder_instance}" || lxc stop --force "${builder_instance}" ||:
   lxc snapshot "${builder_instance}" snap
   lxc publish "${builder_instance}/snap" --alias "${image_name}" kubedee-version="${kubedee_version}"
   lxc delete -f "${builder_instance}" || lxc network detach "${network_id}" "${builder_instance}"
