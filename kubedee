@@ -32,7 +32,6 @@ apiserver_extra_hostnames=""
 bin_dir="./_output/bin"
 create_admin_sa="false"
 create_user_sa="false"
-install_psps=""
 kubedee_dir="${kubedee_dir:-${HOME}/.local/share/kubedee}"
 kubernetes_version=""
 no_set_context="false"
@@ -129,7 +128,7 @@ cmd_start() {
   local cluster_name
   cluster_name="$(kubedee::validate_name "${1}")"
   [[ -d "${kubedee_dir}/clusters/${cluster_name}" ]] || kubedee::exit_error "Found no cluster with name: ${cluster_name} - did you create it?"
-  local -r admission_plugins="NamespaceLifecycle,NodeRestriction,LimitRanger,ServiceAccount,DefaultStorageClass,ResourceQuota${install_psps:+",PodSecurityPolicy"}"
+  local -r admission_plugins="NamespaceLifecycle,NodeRestriction,LimitRanger,ServiceAccount,DefaultStorageClass,ResourceQuota"
   declare -A worker_suffixes
   for ((i = 0; i < num_worker; i++)); do
     worker_suffixes[${i}]="$(tr -cd 'a-z0-9' </dev/urandom | head -c 6 || true)"
@@ -153,9 +152,6 @@ cmd_start() {
   done
   kubedee::create_kubeconfig_admin "${cluster_name}"
   kubedee::configure_rbac "${cluster_name}"
-  if [[ "${install_psps}" == "true" ]]; then
-    kubedee::deploy_pod_security_policies "${cluster_name}"
-  fi
   kubedee::deploy_flannel "${cluster_name}"
   kubedee::deploy_core_dns "${cluster_name}"
   kubedee::deploy_metrics_server "${cluster_name}"
@@ -315,10 +311,6 @@ main() {
     --dir)
       kubedee_dir="${2}"
       shift
-      shift
-      ;;
-    --install-psps)
-      install_psps="true"
       shift
       ;;
     --kubernetes-version)
