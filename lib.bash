@@ -956,7 +956,7 @@ ExecStart=/usr/local/bin/kube-apiserver \\
   --runtime-config=rbac.authorization.k8s.io/v1alpha1 \\
   --service-account-issuer=https://api \\
   --service-account-signing-key-file=/etc/kubernetes/ca-key.pem \\
-  --service-account-api-audiences=kubernetes.default.svc \\
+  --api-audiences=kubernetes.default.svc \\
   --service-account-key-file=/etc/kubernetes/ca-key.pem \\
   --service-cluster-ip-range=10.32.0.0/24 \\
   --service-node-port-range=30000-32767 \\
@@ -1317,16 +1317,6 @@ systemctl start kubelet
 systemctl -q enable kube-proxy
 systemctl start kube-proxy
 EOF
-}
-
-# Args:
-#   $1 The validated cluster name
-kubedee::deploy_pod_security_policies() {
-  local -r cluster_name="${1}"
-  kubedee::log_info "Deploying default pod security policies ..."
-  local -r psp_manifest="${kubedee_source_dir}/manifests/pod-security-policies.yml"
-  kubectl --kubeconfig "${kubedee_dir}/clusters/${cluster_name}/kubeconfig/admin.kubeconfig" \
-    apply -f "${psp_manifest}"
 }
 
 # Args:
