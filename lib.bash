@@ -135,11 +135,14 @@ EOF
 # Args:
 #   $1 The full container name
 kubedee::ensure_machine_id() {
-  [[ "$(kubedee::container_type "${cluster_name}")" == "container" ]] && return
   local -r container_name="${1}"
-  until lxc exec "${container_name}" -- bash ${KUBEDEE_DEBUG:+-x} -c "dbus-uuidgen --ensure=/etc/machine-id; until [ ! -e /run/nologin ]; do :; done;  sed -i 's#\(^127.0.1.1[[:space:]]*\).*#\1${container_name}#' /etc/hosts; echo ${container_name} >/etc/hostname"; do
+  [[ "$(kubedee::container_type "${container_name}")" == "container" ]] && return
+  until lxc exec "${container_name}" -- bash ${KUBEDEE_DEBUG:+-x} -c "dbus-uuidgen --ensure=/etc/machine-id; until [ ! -e /run/nologin ]; do :; done; sed -i 's#\(^127.0.1.1[[:space:]]*\).*#\1${container_name}#' /etc/hosts; echo ${container_name} >/etc/hostname"; do
     sleep 3
   done
+  if [[ "$(kubedee::container_type "${container_name}")" == "virtual-machine" ]]; then
+    lxc exec "${container_name}" -- bash ${KUBEDEE_DEBUG:+-x} -c "sed -e 's/^MACAddress=.*/MACAddress=$(lxc config get ${container_name} volatile.eth1.hwaddr)/' -e 's/^Name=.*/Name=eth1/' /etc/systemd/network/10-cloud-init-*.network > /etc/systemd/network/11-cloud-init-eth1.network"
+  fi
   lxc stop --timeout 60 "${container_name}" || lxc stop --force "${container_name}" ||:
   lxc start "${container_name}"
   kubedee::restart_container "${container_name}"
@@ -203,17 +206,19 @@ kubedee::create_network() {
   local -r cluster_name="${1}"
   mkdir -p "${kubedee_dir}/clusters/${cluster_name}"
   local -r network_id_file="${kubedee_dir}/clusters/${cluster_name}/network_id"
-  local network_id
+  local network_id i
   if [[ -e "${network_id_file}" ]]; then
     network_id="$(cat "${network_id_file}")"
   else
-    network_id="$(tr -cd 'a-z0-9' </dev/urandom | head -c 6 || true)"
-    echo "kubedee-${network_id}" >"${network_id_file}"
+    network_id="$(tr -cd 'a-z0-9' </dev/urandom | head -c 8 ||:)"
+    echo "${network_id}" >"${network_id_file}"
   fi
-  if ! lxc network show "kubedee-${network_id}" &>/dev/null; then
-    kubedee::log_info "Creating network for ${cluster_name} ..."
-    lxc network create "kubedee-${network_id}"
-  fi
+  kubedee::log_info "Creating network for ${cluster_name} ..."
+  for i in "kd-int-${network_id}" "kd-ext-${network_id}"; do
+    if ! lxc network show "${i}" &>/dev/null; then
+      lxc network create "${i}" ipv4.dhcp.expiry=infinite
+    fi
+  done
 }
 
 # Args:
@@ -226,11 +231,13 @@ kubedee::delete_network() {
     kubedee::log_warn "${network_id_file} doesn't exist"
     return
   }
-  local network_id
-  network_id="$(cat "${network_id_file}")"
-  if lxc network show "${network_id}" &>/dev/null; then
-    lxc network delete "${network_id}"
-  fi
+  local -r network_id="$(cat "${network_id_file}")"
+  local i
+  for i in "kd-int-${network_id}" "kd-ext-${network_id}"; do
+    if lxc network show "${i}" &>/dev/null; then
+      lxc network delete "${i}"
+    fi
+  done
   rm -f "${network_id_file}"
 }
 
@@ -773,15 +780,14 @@ kubedee::create_kubeconfig_worker() {
 kubedee::launch_etcd() {
   local -r cluster_name="${1}"
   local -r container_name="kubedee-${cluster_name}-etcd"
-  local -r network_id_file="${kubedee_dir}/clusters/${cluster_name}/network_id"
-  local network_id
-  network_id="$(cat "${network_id_file}")"
+  local -r network_id="$(cat "${kubedee_dir}/clusters/${cluster_name}/network_id")"
   lxc info "${container_name}" &>/dev/null && return
   # shellcheck disable=SC2086,SC2154
   lxc init --storage "${storage_pool}" \
     --config raw.lxc="${raw_lxc_apparmor_allow_incomplete}" \
     "${kubedee_container_image}" "${container_name}"
-  lxc network attach "${network_id}" "${container_name}" eth0 eth0
+  lxc network attach "kd-int-${network_id}" "${container_name}" eth0 eth0
+  lxc network attach "kd-ext-${network_id}" "${container_name}" eth1 eth1
   lxc start "${container_name}"
   kubedee::ensure_machine_id "${container_name}"
 }
@@ -791,14 +797,13 @@ kubedee::launch_etcd() {
 kubedee::launch_registry() {
   local -r cluster_name="${1}"
   local -r container_name="kubedee-${cluster_name}-registry"
-  local -r network_id_file="${kubedee_dir}/clusters/${cluster_name}/network_id"
-  local network_id
-  network_id="$(cat "${network_id_file}")"
+  local -r network_id="$(cat "${kubedee_dir}/clusters/${cluster_name}/network_id")"
   lxc info "${container_name}" &>/dev/null && return
   lxc init --storage "${storage_pool}" \
     --config raw.lxc="${raw_lxc_apparmor_allow_incomplete}" \
     "${kubedee_container_image}" "${container_name}"
-  lxc network attach "${network_id}" "${container_name}" eth0 eth0
+  lxc network attach "kd-int-${network_id}" "${container_name}" eth0 eth0
+  lxc network attach "kd-ext-${network_id}" "${container_name}" eth1 eth1
   lxc start "${container_name}"
   kubedee::ensure_machine_id "${container_name}"
 }
@@ -1122,8 +1127,7 @@ APISERVER_BINDING
 kubedee::launch_container() {
   local -r cluster_name="${1}" container_name="${2}" container_cpu="${3:-$(nproc)}" container_memory="${4:-4GiB}"
   lxc info "${container_name}" &>/dev/null && return
-  local -r network_id_file="${kubedee_dir}/clusters/${cluster_name}/network_id"
-  local network_id="$(cat "${network_id_file}")"
+  local -r network_id="$(cat "${kubedee_dir}/clusters/${cluster_name}/network_id")"
   local lxc_profile="kubedee-cnt"
   # shellcheck disable=SC2086,SC2154
   if grep -qE '^kubedee-vm-' <<<"${kubedee_image}"; then
@@ -1136,7 +1140,8 @@ kubedee::launch_container() {
     --config limits.cpu=${container_cpu} \
     --config limits.memory=${container_memory} \
     "${kubedee_image}" "${container_name}"
-  lxc network attach "${network_id}" "${container_name}" eth0 eth0
+  lxc network attach "kd-int-${network_id}" "${container_name}" eth0 eth0
+  lxc network attach "kd-ext-${network_id}" "${container_name}" eth1 eth1
   lxc start "${container_name}"
   kubedee::ensure_machine_id "${container_name}"
   until [ -n "$(kubedee::container_ipv4_address "${container_name}")" ]; do sleep 3; done
@@ -1404,7 +1409,7 @@ kubedee::prepare_image() {
   local -r builder_instance="${image_name}-setup"
   lxc image info "${image_name}" &>/dev/null && return
   kubedee::log_info "Preparing kubedee ${image_type} image ..."
-  lxc delete -f "${builder_instance}" &>/dev/null || true
+  lxc delete -f "${builder_instance}" &>/dev/null ||:
   local -r network_id="$(cat "${kubedee_dir}/clusters/${cluster_name}/network_id")"
   # shellcheck disable=SC2086
   [[ "${image_type}" == "vm" ]] && prep_init_opts="${lxc_init_opts}" || prep_init_opts="--config raw.lxc='${raw_lxc_apparmor_allow_incomplete}'"
@@ -1414,7 +1419,8 @@ kubedee::prepare_image() {
     --config limits.cpu=$(nproc) \
     "${kubedee_base_image}" "${builder_instance}"
   lxc config device set "${builder_instance}" root size="${rootfs_size:-20GiB}"
-  lxc network attach "${network_id}" "${builder_instance}" eth0 eth0
+  lxc network attach "kd-int-${network_id}" "${builder_instance}" eth0 eth0
+  lxc network attach "kd-ext-${network_id}" "${builder_instance}" eth1 eth1
   lxc start "${builder_instance}"
   kubedee::container_wait_running "${builder_instance}"
   lxc exec "${builder_instance}" -- apt-get update
@@ -1428,6 +1434,8 @@ growpart /dev/sda 2
 resize2fs /dev/sda2
 systemctl enable zramswap
 EOF
+  elif [[ "${image_type}" == "container" ]]; then
+    lxc exec "${builder_instance}" -- bash ${KUBEDEE_DEBUG:+-x} -c "sed 's/^Name=.*/Name=eth1/' /etc/systemd/network/eth0.network > /etc/systemd/network/eth1.network"
   fi
 
   # system dependencies
@@ -1580,7 +1588,7 @@ EOF
   lxc stop --timeout 60 "${builder_instance}" || lxc stop --force "${builder_instance}" ||:
   lxc snapshot "${builder_instance}" snap
   lxc publish "${builder_instance}/snap" --alias "${image_name}" kubedee-version="${kubedee_version}"
-  lxc delete -f "${builder_instance}" || lxc network detach "${network_id}" "${builder_instance}"
+  lxc delete -f "${builder_instance}" || (lxc network detach "kd-int-${network_id}" "${builder_instance}" && lxc network detach "kd-ext-${network_id}" "${builder_instance}")
 }
 
 # Args:
@@ -1589,7 +1597,7 @@ kubedee::smoke_test() {
   local -r cluster_name="${1}"
   local -r kubeconfig="${kubedee_dir}/clusters/${cluster_name}/kubeconfig/admin.kubeconfig"
   local deployment_suffix
-  deployment_suffix="$(tr -cd 'a-z0-9' </dev/urandom | head -c 6 || true)"
+  deployment_suffix="$(tr -cd 'a-z0-9' </dev/urandom | head -c 6 ||:)"
   local -r deployment_name="kubedee-smoke-test-${cluster_name}-${deployment_suffix}"
   kubedee::log_info "Running smoke test for cluster ${cluster_name} ..."
   "${_kubectl}" --kubeconfig "${kubeconfig}" create deploy "${deployment_name}" --image=nginx
