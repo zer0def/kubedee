@@ -56,19 +56,14 @@ data:
         },
         {
           "type": "portmap",
-          "capabilities": {
-            "portMappings": true
-          }
+          "capabilities": {"portMappings": true}
         }
       ]
     }
   net-conf.json: |
     {
       "Network": "10.244.0.0/16",
-      "Backend": {
-        "Type": "vxlan",
-        "DirectRouting": true
-      }
+      "Backend": {"Type": "vxlan", "Port": 4789, "VNI": 4096}
     }
 ---
 apiVersion: apps/v1

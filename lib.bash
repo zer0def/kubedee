@@ -65,11 +65,13 @@ kubedee::find_kubectl() {
 
 supported_arches=(amd64 arm64 arm)
 case "$(uname -m)" in
-  x86_64)  lxc_arch=amd64   sys_arch=amd64;;
-  aarch64) lxc_arch=arm64   sys_arch=arm64;;
-  arm*)    lxc_arch=armhf   sys_arch=arm;;
-  ppc64le) lxc_arch=ppc64el sys_arch=ppc64le;;
-  s390x)   lxc_arch=s390x   sys_arch=s390x;;
+  x86_64)   lxc_arch=amd64    sys_arch=amd64;;
+  aarch64)  lxc_arch=arm64    sys_arch=arm64;;
+  arm*)     lxc_arch=armhf    sys_arch=arm;;
+  mips64le) lxc_arch=mips64el sys_arch=mips64el;;
+  ppc64le)  lxc_arch=ppc64el  sys_arch=ppc64le;;
+  riscv64)  lxc_arch=riscv64  sys_arch=riscv64;;
+  s390x)    lxc_arch=s390x    sys_arch=s390x;;
   *) kubedee::exit_error "Unsupported architecture.";;
 esac
 
@@ -77,7 +79,6 @@ readonly kubedee_base_image="images:debian/bookworm/${lxc_arch}"
 readonly kubedee_etcd_version="v3.4.14"
 readonly kubedee_runc_version="v1.0.0-rc93"
 readonly kubedee_cni_plugins_version="v0.9.1"
-readonly kubedee_flannel_cni_plugin_version="v1.0.0"
 readonly kubedee_crio_version="v1.20.0"
 readonly kubedee_go_version="1.17.5"
 readonly kubedee_conmon_version="v2.0.31"
@@ -1079,7 +1080,7 @@ kubedee::configure_rbac() {
 
   # During apiserver initialization, resources are not available
   # immediately. Wait for 'clusterroles' to avoid the following:
-  # error: unable to recognize "STDIN": no matches for kind "ClusterRole" in version "rbac.authorization.k8s.io/v1beta1"
+  # error: unable to recognize "STDIN": no matches for kind "ClusterRole" in version "rbac.authorization.k8s.io/v1"
   until "${_kubectl}" --kubeconfig "${kubeconfig}" get clusterroles &>/dev/null; do sleep 1; done
 
   cat <<APISERVER_RBAC | "${_kubectl}" --kubeconfig "${kubeconfig}" apply -f -
@@ -1251,9 +1252,8 @@ authorization:
   mode: Webhook
 cgroupDriver: systemd
 clusterDomain: "cluster.local"
-clusterDNS:
-  - "10.32.0.10"
-podCIDR: "10.20.0.0/16"
+clusterDNS: ["10.32.0.10"]
+podCIDR: "10.244.0.0/16"
 runtimeRequestTimeout: "10m"
 tlsCertFile: "/etc/kubernetes/${container_name}.pem"
 tlsPrivateKeyFile: "/etc/kubernetes/${container_name}-key.pem"
@@ -1301,7 +1301,7 @@ Description=Kubernetes Kube Proxy
 
 [Service]
 ExecStart=/usr/local/bin/kube-proxy \\
-  --cluster-cidr=10.200.0.0/16 \\
+  --cluster-cidr=10.244.0.0/16 \\
   --kubeconfig=/etc/kubernetes/kube-proxy.kubeconfig \\
   --proxy-mode=iptables \\
   --conntrack-max-per-core=0 \\
@@ -1328,12 +1328,14 @@ EOF
 
 # Args:
 #   $1 The validated cluster name
-kubedee::deploy_flannel() {
+kubedee::deploy_cni() {
   local -r cluster_name="${1}"
-  kubedee::log_info "Deploying flannel ..."
-  local -r flannel_manifest="${kubedee_source_dir}/manifests/kube-flannel.yml"
-  "${_kubectl}" --kubeconfig "${kubedee_dir}/clusters/${cluster_name}/kubeconfig/admin.kubeconfig" \
-    apply -f "${flannel_manifest}"
+  kubedee::log_info "Deploying CNI ..."
+  # "${kubedee_source_dir}/manifests/multus-daemonset-thick.yml"
+  # "${kubedee_source_dir}/manifests/cni/multus-thin.yml"
+  cat "${kubedee_source_dir}/manifests/cni/flannel.yml" \
+      "${kubedee_source_dir}/manifests/cni/whereabouts.yml" \
+      | "${_kubectl}" --kubeconfig "${kubedee_dir}/clusters/${cluster_name}/kubeconfig/admin.kubeconfig" apply -f-
 }
 
 # Args:
@@ -1549,8 +1551,6 @@ curl -fsSL "https://github.com/etcd-io/etcd/releases/download/${kubedee_etcd_ver
 # cni
 mkdir -p /opt/cni/bin
 curl -fsSL https://github.com/containernetworking/plugins/releases/download/${kubedee_cni_plugins_version}/cni-plugins-linux-${sys_arch}-${kubedee_cni_plugins_version}.tgz | tar -xzC /opt/cni/bin
-curl -fsSLo /opt/cni/bin/flannel https://github.com/flannel-io/cni-plugin/releases/download/${kubedee_flannel_cni_plugin_version}/flannel-${sys_arch}
-chmod +x /opt/cni/bin/flannel
 
 # kata
 [ "$(uname -m)" != "x86_64" ] || curl -fsSL https://github.com/kata-containers/kata-containers/releases/download/${kubedee_kata_version}/kata-static-${kubedee_kata_version}-$(uname -m).tar.xz | tar -xJC /
