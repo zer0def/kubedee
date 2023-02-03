@@ -1,0 +1,184 @@
+# https://github.com/k8snetworkplumbingwg/sriov-cni
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: kube-sriov-cni-ds
+  namespace: kube-system
+  labels:
+    tier: node
+    app: sriov-cni
+spec:
+  selector:
+    matchLabels:
+      name: sriov-cni
+  template:
+    metadata:
+      labels:
+        name: sriov-cni
+        tier: node
+        app: sriov-cni
+    spec:
+      tolerations:
+      - key: node-role.kubernetes.io/master
+        operator: Exists
+        effect: NoSchedule
+      containers:
+      - name: kube-sriov-cni
+        image: ghcr.io/k8snetworkplumbingwg/sriov-cni
+        imagePullPolicy: IfNotPresent
+        securityContext:
+          allowPrivilegeEscalation: false
+          privileged: false
+          readOnlyRootFilesystem: true
+          capabilities:
+            drop: ["ALL"]
+        resources:
+          requests:
+            cpu: "100m"
+            memory: "50Mi"
+          limits:
+            cpu: "100m"
+            memory: "50Mi"
+        volumeMounts:
+        - name: cnibin
+          mountPath: /host/opt/cni/bin
+      volumes:
+      - name: cnibin
+        hostPath:
+          path: /opt/cni/bin
+# https://github.com/k8snetworkplumbingwg/sriov-network-device-plugin # https://github.com/k8snetworkplumbingwg/bond-cni
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sriovdp-config
+  namespace: kube-system
+data:
+  config.json: |
+    {
+      "resourceList": [
+#        {
+#        "resourceName": "intel_sriov_netdevice",
+#        "selectors": {
+#          "vendors": ["8086"],
+#          "devices": ["154c", "10ed", "1889"],
+#          "drivers": ["i40evf", "iavf", "ixgbevf"]
+#        }
+#      },
+#      {
+#        "resourceName": "intel_sriov_dpdk",
+#        "selectors": {
+#          "vendors": ["8086"],
+#          "devices": ["154c", "10ed", "1889"],
+#          "drivers": ["vfio-pci"],
+#          "pfNames": ["enp0s0f0","enp2s2f1"]
+#        }
+#      },
+#      {
+#        "resourceName": "mlnx_sriov_rdma",
+#        "selectors": {
+#          "vendors": ["15b3"],
+#          "devices": ["1018"],
+#          "drivers": ["mlx5_ib"],
+#          "isRdma": true
+#        }
+#      }
+      ]
+    }
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sriov-device-plugin
+  namespace: kube-system
+---
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: kube-sriov-device-plugin
+  namespace: kube-system
+  labels:
+    tier: node
+    app: sriovdp
+spec:
+  selector:
+    matchLabels:
+      name: sriov-device-plugin
+  template:
+    metadata:
+      labels:
+        name: sriov-device-plugin
+        tier: node
+        app: sriovdp
+    spec:
+      hostNetwork: true
+      tolerations:
+      - key: node-role.kubernetes.io/master
+        operator: Exists
+        effect: NoSchedule
+      serviceAccountName: sriov-device-plugin
+      containers:
+      - name: kube-sriovdp
+        image: ghcr.io/k8snetworkplumbingwg/sriov-network-device-plugin:latest
+        imagePullPolicy: IfNotPresent
+        args:
+        - --log-dir=sriovdp
+        - --log-level=10
+        securityContext:
+          privileged: true
+        resources:
+          requests:
+            cpu: "250m"
+            memory: "40Mi"
+          limits:
+            cpu: 1
+            memory: "200Mi"
+        volumeMounts:
+        - name: devicesock
+          mountPath: /var/lib/kubelet/
+          readOnly: false
+        - name: log
+          mountPath: /var/log
+        - name: config-volume
+          mountPath: /etc/pcidp
+        - name: device-info
+          mountPath: /var/run/k8s.cni.cncf.io/devinfo/dp
+      volumes:
+      - name: devicesock
+        hostPath:
+          path: /var/lib/kubelet/
+      - name: log
+        hostPath:
+          path: /var/log
+      - name: device-info
+        hostPath:
+          path: /var/run/k8s.cni.cncf.io/devinfo/dp
+          type: DirectoryOrCreate
+      - name: config-volume
+        configMap:
+          name: sriovdp-config
+          items:
+          - key: config.json
+            path: config.json
+#---
+#apiVersion: "k8s.cni.cncf.io/v1"
+#kind: NetworkAttachmentDefinition
+#metadata:
+#  name: sriov-net1
+#  annotations:
+#    k8s.v1.cni.cncf.io/resourceName: intel.com/intel_sriov_netdevice
+#spec:
+#  config: '{
+#  "type": "sriov",
+#  "cniVersion": "0.3.1",
+#  "name": "sriov-network",
+#  "ipam": {
+#    "type": "host-local",
+#    "subnet": "10.56.217.0/24",
+#    "routes": [{
+#      "dst": "0.0.0.0/0"
+#    }],
+#    "gateway": "10.56.217.1"
+#  }
+#}'
