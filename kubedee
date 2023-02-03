@@ -152,7 +152,7 @@ cmd_start() {
   done
   kubedee::create_kubeconfig_admin "${cluster_name}"
   kubedee::configure_rbac "${cluster_name}"
-  kubedee::deploy_flannel "${cluster_name}"
+  kubedee::deploy_cni "${cluster_name}"
   kubedee::deploy_core_dns "${cluster_name}"
   kubedee::deploy_metrics_server "${cluster_name}"
   [[ "${enable_kata}" = "true" ]] && kubedee::deploy_kata_runtimes "${cluster_name}"
