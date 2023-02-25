@@ -46,6 +46,7 @@ storage_pool="kubedee"
 rootfs_size="24GiB"
 enable_insecure_registry="false"
 enable_kata="false"
+routed=""
 
 # shellcheck source=/dev/null
 source "${kubedee_source_dir}/lib.bash"
@@ -148,11 +149,11 @@ cmd_start() {
   kubedee::find_kubectl start
   kubedee::configure_controller "${cluster_name}" "kubedee-${cluster_name}-controller" "${admission_plugins}"
   for ((i = 0; i < num_worker; i++)); do
-    kubedee::configure_worker "${cluster_name}" "kubedee-${cluster_name}-worker-${worker_suffixes[${i}]}"
+    kubedee::configure_worker "${cluster_name}" "kubedee-${cluster_name}-worker-${worker_suffixes[${i}]}" "${routed}"
   done
   kubedee::create_kubeconfig_admin "${cluster_name}"
   kubedee::configure_rbac "${cluster_name}"
-  kubedee::deploy_cni "${cluster_name}"
+  kubedee::deploy_cni "${cluster_name}" "${routed}"
   kubedee::deploy_core_dns "${cluster_name}"
   kubedee::deploy_metrics_server "${cluster_name}"
   [[ "${enable_kata}" = "true" ]] && kubedee::deploy_kata_runtimes "${cluster_name}"
@@ -371,6 +372,10 @@ main() {
       ;;
     --enable-kata)
       enable_kata="true"
+      shift
+      ;;
+    --routed)
+      routed="true"
       shift
       ;;
     help | -h | --help)

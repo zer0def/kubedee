@@ -1155,6 +1155,8 @@ kubedee::configure_worker() {
   local -r cluster_name="${1}"
   local -r container_name="${2}"
   local -r registry_ip="$(kubedee::container_ipv4_address "kubedee-${cluster_name}-registry")"
+  local masqed
+  [ -z "${3:-}" ] && masqed="--masquerade-all" || masqed=""
 
   kubedee::container_wait_running "${container_name}"
   kubedee::create_certificate_worker "${cluster_name}" "${container_name}"
@@ -1253,7 +1255,7 @@ authorization:
 cgroupDriver: systemd
 clusterDomain: "cluster.local"
 clusterDNS: ["10.32.0.10"]
-podCIDR: "10.244.0.0/16"
+podCIDR: "10.20.0.0/16"
 runtimeRequestTimeout: "10m"
 tlsCertFile: "/etc/kubernetes/${container_name}.pem"
 tlsPrivateKeyFile: "/etc/kubernetes/${container_name}-key.pem"
@@ -1295,7 +1297,7 @@ RestartSec=5
 WantedBy=multi-user.target
 KUBELET_UNIT
 
-cat >/etc/systemd/system/kube-proxy.service <<'KUBE_PROXY_UNIT'
+cat >/etc/systemd/system/kube-proxy.service <<KUBE_PROXY_UNIT
 [Unit]
 Description=Kubernetes Kube Proxy
 
@@ -1303,7 +1305,7 @@ Description=Kubernetes Kube Proxy
 ExecStart=/usr/local/bin/kube-proxy \\
   --cluster-cidr=10.244.0.0/16 \\
   --kubeconfig=/etc/kubernetes/kube-proxy.kubeconfig \\
-  --proxy-mode=iptables \\
+  --proxy-mode=iptables ${masqed} \\
   --conntrack-max-per-core=0 \\
   --v=2
 Restart=on-failure
@@ -1329,11 +1331,13 @@ EOF
 # Args:
 #   $1 The validated cluster name
 kubedee::deploy_cni() {
-  local -r cluster_name="${1}"
+  local cluster_name="${1}" suffix
+  [ -z "${2}" ] && suffix="-masqed" || suffix="-routed"
   kubedee::log_info "Deploying CNI ..."
-  # "${kubedee_source_dir}/manifests/multus-daemonset-thick.yml"
+  # "${kubedee_source_dir}/manifests/cni/multus-thick.yml"
   # "${kubedee_source_dir}/manifests/cni/multus-thin.yml"
-  cat "${kubedee_source_dir}/manifests/cni/flannel.yml" \
+  cat "${kubedee_source_dir}/manifests/cni/flannel-common.yml" \
+      "${kubedee_source_dir}/manifests/cni/flannel${suffix}.yml" \
       "${kubedee_source_dir}/manifests/cni/whereabouts.yml" \
       | "${_kubectl}" --kubeconfig "${kubedee_dir}/clusters/${cluster_name}/kubeconfig/admin.kubeconfig" apply -f-
 }
