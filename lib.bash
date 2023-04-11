@@ -1275,7 +1275,6 @@ Requires=crio.service
 [Service]
 ExecStart=/usr/local/bin/kubelet \\
   --config=/etc/kubernetes/config/kubelet.yaml \\
-  --container-runtime=remote \\
   --container-runtime-endpoint=unix:///var/run/crio/crio.sock \\
   --image-service-endpoint=unix:///var/run/crio/crio.sock \\
   --kubeconfig=/etc/kubernetes/${container_name}-kubelet.kubeconfig \\
