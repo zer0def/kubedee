@@ -2,7 +2,7 @@
 
 [![builds.sr.ht status](https://builds.sr.ht/~schu/kubedee.svg)](https://builds.sr.ht/~schu/kubedee?)
 
-Fast multi-node Kubernetes (>= 1.19) development and test clusters on [LXD](https://github.com/lxc/lxd).
+Fast multi-node Kubernetes (>= 1.19) development and test clusters on [Incus](https://github.com/lxc/incus) or [LXD](https://github.com/canonical/lxd).
 
 Under the hood, [CRI-O](https://github.com/kubernetes-incubator/cri-o) is used
 as container runtime and [Flannel](https://github.com/coreos/flannel) for
@@ -12,8 +12,8 @@ For questions or feedback, please open an issue.
 
 ## Requirements
 
-* [LXD](https://github.com/lxc/lxd)
-  * Make sure your user is member of the `lxd` group (see `lxd --group ...`)
+* [Incus](https://github.com/lxc/incus)/[LXD](https://github.com/canonical/lxd).
+  * Make sure your user is member of the `incus`/`lxd` group (see `incusd --group …` / `lxd --group …`)
   * btrfs is used a storage driver currently and required
 * [cfssl](https://github.com/cloudflare/cfssl) with cfssljson
 * [jq](https://stedolan.github.io/jq/)
