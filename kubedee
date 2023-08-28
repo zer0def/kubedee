@@ -116,8 +116,8 @@ cmd_delete() {
   cluster_name="$(kubedee::validate_name "${1}")"
   [[ ! -d "${kubedee_dir}/clusters/${cluster_name}" ]] && kubedee::exit_error "Found no existing cluster with name: ${cluster_name}"
   kubedee::log_info "Deleting cluster ${cluster_name} ..."
-  for c in $(lxc list --format json | jq -r '.[].name'); do
-    [[ "${c}" == "kubedee-${cluster_name}-"* ]] && lxc delete -f "${c}"
+  for c in $("${_lxc}" list --format json | jq -r '.[].name'); do
+    [[ "${c}" == "kubedee-${cluster_name}-"* ]] && "${_lxc}" delete -f "${c}"
   done
   kubedee::delete_network "${cluster_name}"
   [[ "${no_set_context}" == "false" ]] && "${_kubectl}" config unset current-context >/dev/null
@@ -184,7 +184,7 @@ cmd_start() {
   if [[ -n "${admin_sa}" ]]; then
     kubedee::log_info "Admin service account token can be obtained with 'kubedee admin-sa-token ${cluster_name}'"
   fi
-  kubedee::log_info "Cluster nodes can be accessed with 'lxc exec <name> bash'"
+  kubedee::log_info "Cluster nodes can be accessed with '"${_lxc}" exec <name> bash'"
   kubedee::log_info "Cluster files can be found in '${kubedee_dir}/clusters/${cluster_name}'\\n"
   kubedee::log_info "Current node status is (should be ready soon):"
   "${_kubectl}" --kubeconfig "${kubedee_dir}/clusters/${cluster_name}/kubeconfig/admin.kubeconfig" get nodes
