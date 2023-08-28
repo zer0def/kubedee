@@ -8,6 +8,7 @@
 #   $lxc_init_opts Additional LXC container creation options
 #   $_kubectl Path to kubectl binary
 
+command -v incus &>/dev/null && _lxc="incus" || _lxc="lxc"
 kubedee::log_info() {
   local -r message="${1:-""}"
   echo -e "\\033[1;37m==> ${message}\\033[0m"
@@ -86,7 +87,7 @@ readonly kubedee_kata_version="2.3.1"
 
 readonly lxd_status_code_running=103
 
-readonly lxc_driver_version="$(lxc info | awk '/[:space:]*driver_version/ {print $2}')"
+readonly lxc_driver_version="$("${_lxc}" info | awk '/[:space:]*driver_version/ {print $2}')"
 if [[ "${lxc_driver_version}" == 2* ]]; then
   readonly raw_lxc_apparmor_profile="lxc.aa_profile=unconfined"
   readonly raw_lxc_apparmor_allow_incomplete="lxc.aa_allow_incomplete=1"
@@ -97,7 +98,7 @@ fi
 
 kubedee::restart_container() {
   local -r container_name="${1}"
-  until lxc exec "${container_name}" -- bash ${KUBEDEE_DEBUG:+-x} -c '[ ! -e /run/nologin ]' &>/dev/null; do
+  until "${_lxc}" exec "${container_name}" -- bash ${KUBEDEE_DEBUG:+-x} -c '[ ! -e /run/nologin ]' &>/dev/null; do
     sleep 3
   done
 }
@@ -106,19 +107,19 @@ kubedee::restart_container() {
 #   $1 The full container name
 kubedee::vm_fixups() {
   local -r container_name="${1}" iface_src="enp5s0" iface_dest="eth0"
-  local -r distro="$(lxc exec "${container_name}" -- awk -F= '/^ID=/ {print $NF}' /etc/os-release)"
+  local -r distro="$("${_lxc}" exec "${container_name}" -- awk -F= '/^ID=/ {print $NF}' /etc/os-release)"
 
   # shellcheck disable=SC2016
-  until lxc exec "${container_name}" -- bash ${KUBEDEE_DEBUG:+-x} -c 'sed -i "s/\(^[[:space:]]*linux.*\)/\1 net.ifnames=0 systemd.unified_cgroup_hierarchy=0 amd_iommu=on intel_iommu=on kvm-intel.nested=1 kvm-amd.nested=1 kvm.ignore_msrs=1 iommu=pt/g" $(find /boot -iname grub.cfg)' &>/dev/null; do
+  until "${_lxc}" exec "${container_name}" -- bash ${KUBEDEE_DEBUG:+-x} -c 'sed -i "s/\(^[[:space:]]*linux.*\)/\1 net.ifnames=0 systemd.unified_cgroup_hierarchy=0 amd_iommu=on intel_iommu=on kvm-intel.nested=1 kvm-amd.nested=1 kvm.ignore_msrs=1 iommu=pt/g" $(find /boot -iname grub.cfg)' &>/dev/null; do
     sleep 3
   done
   case "${distro}" in
-    *suse*) lxc exec "${container_name}" -- mv "/etc/sysconfig/network/ifcfg-${iface_src}" "/etc/sysconfig/network/ifcfg-${iface_dest}";;
-    arch) lxc exec "${container_name}" -- bash ${KUBEDEE_DEBUG:+-x} -c "sed -i 's/${iface_src}/${iface_dest}/g' '/etc/systemd/network/${iface_src}.network' && mv '/etc/systemd/network/${iface_src}.network' '/etc/systemd/network/${iface_dest}.network'";;
-    debian) lxc exec "${container_name}" -- bash ${KUBEDEE_DEBUG:+-x} -c ". /etc/os-release; [ -z \"\${VERSION_ID}\" ] || [ \"\${VERSION_ID:-69420}\" -gt 11 ] || sed -i 's/${iface_src}/${iface_dest}/g' /etc/network/interfaces" ;;
-    ubuntu) lxc exec "${container_name}" -- bash ${KUBEDEE_DEBUG:+-x} -c "ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf; sed -i 's/${iface_src}/${iface_dest}/g' /etc/netplan/*" ;;
+    *suse*) "${_lxc}" exec "${container_name}" -- mv "/etc/sysconfig/network/ifcfg-${iface_src}" "/etc/sysconfig/network/ifcfg-${iface_dest}";;
+    arch) "${_lxc}" exec "${container_name}" -- bash ${KUBEDEE_DEBUG:+-x} -c "sed -i 's/${iface_src}/${iface_dest}/g' '/etc/systemd/network/${iface_src}.network' && mv '/etc/systemd/network/${iface_src}.network' '/etc/systemd/network/${iface_dest}.network'";;
+    debian) "${_lxc}" exec "${container_name}" -- bash ${KUBEDEE_DEBUG:+-x} -c ". /etc/os-release; [ -z \"\${VERSION_ID}\" ] || [ \"\${VERSION_ID:-69420}\" -gt 11 ] || sed -i 's/${iface_src}/${iface_dest}/g' /etc/network/interfaces" ;;
+    ubuntu) "${_lxc}" exec "${container_name}" -- bash ${KUBEDEE_DEBUG:+-x} -c "ln -sf /run/systemd/resolve/resolv.conf /etc/resolv.conf; sed -i 's/${iface_src}/${iface_dest}/g' /etc/netplan/*" ;;
   esac
-  lxc exec "${container_name}" -- bash ${KUBEDEE_DEBUG:+-x} <<'EOF'
+  "${_lxc}" exec "${container_name}" -- bash ${KUBEDEE_DEBUG:+-x} <<'EOF'
 cat <<EOD > /etc/modules-load.d/kata.conf
 kvm
 vfio
@@ -128,8 +129,8 @@ vhost-vsock
 vsock
 EOD
 EOF
-  lxc stop --timeout 60 "${container_name}" || lxc stop --force "${container_name}" ||:
-  lxc start "${container_name}"
+  "${_lxc}" stop --timeout 60 "${container_name}" || "${_lxc}" stop --force "${container_name}" ||:
+  "${_lxc}" start "${container_name}"
   kubedee::restart_container "${container_name}"
 }
 
@@ -138,21 +139,21 @@ EOF
 kubedee::ensure_machine_id() {
   local -r container_name="${1}"
   [[ "$(kubedee::container_type "${container_name}")" == "container" ]] && return
-  until lxc exec "${container_name}" -- bash ${KUBEDEE_DEBUG:+-x} -c "dbus-uuidgen --ensure=/etc/machine-id; until [ ! -e /run/nologin ]; do :; done; sed -i 's#\(^127.0.1.1[[:space:]]*\).*#\1${container_name}#' /etc/hosts; echo ${container_name} >/etc/hostname"; do
+  until "${_lxc}" exec "${container_name}" -- bash ${KUBEDEE_DEBUG:+-x} -c "dbus-uuidgen --ensure=/etc/machine-id; until [ ! -e /run/nologin ]; do :; done; sed -i 's#\(^127.0.1.1[[:space:]]*\).*#\1${container_name}#' /etc/hosts; echo ${container_name} >/etc/hostname"; do
     sleep 3
   done
   if [[ "$(kubedee::container_type "${container_name}")" == "virtual-machine" ]]; then
-    lxc exec "${container_name}" -- bash ${KUBEDEE_DEBUG:+-x} -c "sed -e 's/^MACAddress=.*/MACAddress=$(lxc config get ${container_name} volatile.eth1.hwaddr)/' -e 's/^Name=.*/Name=eth1/' /etc/systemd/network/10-cloud-init-*.network > /etc/systemd/network/11-cloud-init-eth1.network"
+    "${_lxc}" exec "${container_name}" -- bash ${KUBEDEE_DEBUG:+-x} -c "sed -e 's/^MACAddress=.*/MACAddress=$("${_lxc}" config get ${container_name} volatile.eth1.hwaddr)/' -e 's/^Name=.*/Name=eth1/' \$(ls -1 /etc/systemd/network/*.network | head -n1) > /etc/systemd/network/11-cloud-init-eth1.network"
   fi
-  lxc stop --timeout 60 "${container_name}" || lxc stop --force "${container_name}" ||:
-  lxc start "${container_name}"
+  "${_lxc}" stop --timeout 60 "${container_name}" || "${_lxc}" stop --force "${container_name}" ||:
+  "${_lxc}" start "${container_name}"
   kubedee::restart_container "${container_name}"
 }
 
 kubedee::manage_profiles(){
   local -r container_profile="kubedee-cnt" unified_profile="kubedee-cnt-unified"
-  lxc profile show "${container_profile}" &>/dev/null || lxc profile copy default "${container_profile}"
-  lxc profile set "${container_profile}" raw.lxc - <<EOF
+  "${_lxc}" profile show "${container_profile}" &>/dev/null || "${_lxc}" profile copy default "${container_profile}"
+  "${_lxc}" profile set "${container_profile}" raw.lxc - <<EOF
 ${raw_lxc_apparmor_profile}
 lxc.mount.auto=proc:rw sys:rw cgroup:rw
 lxc.init.cmd=/sbin/init systemd.unified_cgroup_hierarchy=0
@@ -161,10 +162,10 @@ lxc.cgroup2.devices.allow=a
 lxc.cap.drop=
 ${raw_lxc_apparmor_allow_incomplete}
 EOF
-  lxc profile set "${container_profile}" security.privileged=true security.nesting=true linux.kernel_modules=ip_tables,ip6_tables,netlink_diag,nf_nat,overlay,kvm,vhost-net,vhost-scsi,vhost-vsock,vsock
+  "${_lxc}" profile set "${container_profile}" security.privileged=true security.nesting=true linux.kernel_modules=ip_tables,ip6_tables,netlink_diag,nf_nat,overlay,kvm,vhost-net,vhost-scsi,vhost-vsock,vsock
 
-  lxc profile show "${unified_profile}" &>/dev/null || lxc profile copy "${container_profile}" "${unified_profile}"
-  lxc profile set "${unified_profile}" raw.lxc - <<EOF
+  "${_lxc}" profile show "${unified_profile}" &>/dev/null || "${_lxc}" profile copy "${container_profile}" "${unified_profile}"
+  "${_lxc}" profile set "${unified_profile}" raw.lxc - <<EOF
 ${raw_lxc_apparmor_profile}
 lxc.mount.auto=proc:rw sys:rw cgroup:rw
 lxc.cgroup.devices.allow=a
@@ -216,8 +217,8 @@ kubedee::create_network() {
   fi
   kubedee::log_info "Creating network for ${cluster_name} ..."
   for i in "kd-int-${network_id}" "kd-ext-${network_id}"; do
-    if ! lxc network show "${i}" &>/dev/null; then
-      lxc network create "${i}" ipv4.dhcp.expiry=infinite
+    if ! "${_lxc}" network show "${i}" &>/dev/null; then
+      "${_lxc}" network create "${i}" ipv4.dhcp.expiry=infinite
     fi
   done
 }
@@ -235,8 +236,8 @@ kubedee::delete_network() {
   local -r network_id="$(cat "${network_id_file}")"
   local i
   for i in "kd-int-${network_id}" "kd-ext-${network_id}"; do
-    if lxc network show "${i}" &>/dev/null; then
-      lxc network delete "${i}"
+    if "${_lxc}" network show "${i}" &>/dev/null; then
+      "${_lxc}" network delete "${i}"
     fi
   done
   rm -f "${network_id_file}"
@@ -248,9 +249,9 @@ kubedee::delete_network() {
 kubedee::create_storage_pool() {
   local -r cluster_name="${1:-kubedee}"
   local -r driver="${2:-btrfs}"
-  if ! lxc storage show "${cluster_name}" &>/dev/null; then
+  if ! "${_lxc}" storage show "${cluster_name}" &>/dev/null; then
     kubedee::log_info "Creating new storage pool for kubedee ..."
-    lxc storage create "${cluster_name}" "${driver}"
+    "${_lxc}" storage create "${cluster_name}" "${driver}"
   fi
 }
 
@@ -258,21 +259,21 @@ kubedee::create_storage_pool() {
 #   $1 The full container name
 kubedee::container_status_code() {
   local -r container_name="${1}"
-  lxc list --format json | jq -r ".[] | select(.name == \"${container_name}\").state.status_code"
+  "${_lxc}" list --format json | jq -r ".[] | select(.name == \"${container_name}\").state.status_code"
 }
 
 # Args:
 #   $1 The full container name
 kubedee::container_ipv4_address() {
   local -r container_name="${1}"
-  lxc list --format json | jq -r ".[] | select(.name == \"${container_name}\").state.network | to_entries[] | select(.key|test(\"^(enp|ens|eth)\")).value.addresses[] | select(.family == \"inet\").address" | head -n1
+  "${_lxc}" list --format json | jq -r ".[] | select(.name == \"${container_name}\").state.network | to_entries[] | select(.key|test(\"^(enp|ens|eth)\")).value.addresses[] | select(.family == \"inet\").address" | head -n1
 }
 
 # Args:
 #   $1 The full container name
 kubedee::container_type() {
   local -r container_name="${1}"
-  lxc list --format json | jq -r ".[] | select(.name == \"${container_name}\").type"
+  "${_lxc}" list --format json | jq -r ".[] | select(.name == \"${container_name}\").type"
 }
 
 # Args:
@@ -288,7 +289,7 @@ kubedee::container_wait_running() {
     sleep 3
   done
   if [[ "$(kubedee::container_type "${cluster_name}")" == "container" ]]; then
-    lxc config device set "${cluster_name}" eth0 ipv4.address "$(kubedee::container_ipv4_address "${cluster_name}")"
+    "${_lxc}" config device set "${cluster_name}" eth0 ipv4.address "$(kubedee::container_ipv4_address "${cluster_name}")"
   fi
   until [[ "$(kubedee::container_ipv4_address "${cluster_name}")" != "" ]]; do
     kubedee::log_info "Waiting for ${cluster_name} to settle it's assigned IPv4 address ..."
@@ -782,14 +783,14 @@ kubedee::launch_etcd() {
   local -r cluster_name="${1}"
   local -r container_name="kubedee-${cluster_name}-etcd"
   local -r network_id="$(cat "${kubedee_dir}/clusters/${cluster_name}/network_id")"
-  lxc info "${container_name}" &>/dev/null && return
+  "${_lxc}" info "${container_name}" &>/dev/null && return
   # shellcheck disable=SC2086,SC2154
-  lxc init --storage "${storage_pool}" \
+  "${_lxc}" init --storage "${storage_pool}" \
     --config raw.lxc="${raw_lxc_apparmor_allow_incomplete}" \
     "${kubedee_container_image}" "${container_name}"
-  lxc network attach "kd-int-${network_id}" "${container_name}" eth0 eth0
-  lxc network attach "kd-ext-${network_id}" "${container_name}" eth1 eth1
-  lxc start "${container_name}"
+  "${_lxc}" network attach "kd-int-${network_id}" "${container_name}" eth0 eth0
+  "${_lxc}" network attach "kd-ext-${network_id}" "${container_name}" eth1 eth1
+  "${_lxc}" start "${container_name}"
   kubedee::ensure_machine_id "${container_name}"
 }
 
@@ -799,13 +800,13 @@ kubedee::launch_registry() {
   local -r cluster_name="${1}"
   local -r container_name="kubedee-${cluster_name}-registry"
   local -r network_id="$(cat "${kubedee_dir}/clusters/${cluster_name}/network_id")"
-  lxc info "${container_name}" &>/dev/null && return
-  lxc init --storage "${storage_pool}" \
+  "${_lxc}" info "${container_name}" &>/dev/null && return
+  "${_lxc}" init --storage "${storage_pool}" \
     --config raw.lxc="${raw_lxc_apparmor_allow_incomplete}" \
     "${kubedee_container_image}" "${container_name}"
-  lxc network attach "kd-int-${network_id}" "${container_name}" eth0 eth0
-  lxc network attach "kd-ext-${network_id}" "${container_name}" eth1 eth1
-  lxc start "${container_name}"
+  "${_lxc}" network attach "kd-int-${network_id}" "${container_name}" eth0 eth0
+  "${_lxc}" network attach "kd-ext-${network_id}" "${container_name}" eth1 eth1
+  "${_lxc}" start "${container_name}"
   kubedee::ensure_machine_id "${container_name}"
 }
 
@@ -818,10 +819,10 @@ kubedee::configure_registry() {
   local ip="$(kubedee::container_ipv4_address "${container_name}")"
   kubedee::log_info "Providing files to ${container_name} ..."
 
-  lxc file push -p "${kubedee_source_dir}/configs/registry/config.yml" "${container_name}/etc/docker/registry/config.yml"
+  "${_lxc}" file push -p "${kubedee_source_dir}/configs/registry/config.yml" "${container_name}/etc/docker/registry/config.yml"
 
   kubedee::log_info "Configuring ${container_name} ..."
-  cat <<EOF | lxc exec "${container_name}" bash ${KUBEDEE_DEBUG:+-x}
+  cat <<EOF | "${_lxc}" exec "${container_name}" -- bash ${KUBEDEE_DEBUG:+-x}
 set -euo pipefail
 cat >/etc/systemd/system/oci-registry.service <<'OCI_REGISTRY'
 [Unit]
@@ -850,10 +851,10 @@ kubedee::configure_etcd() {
   ip="$(kubedee::container_ipv4_address "${container_name}")"
   kubedee::log_info "Providing files to ${container_name} ..."
 
-  lxc file push -p "${kubedee_dir}/clusters/${cluster_name}/certificates/"{etcd.pem,etcd-key.pem,ca-etcd.pem} "${container_name}/etc/etcd/"
+  "${_lxc}" file push -p "${kubedee_dir}/clusters/${cluster_name}/certificates/"{etcd.pem,etcd-key.pem,ca-etcd.pem} "${container_name}/etc/etcd/"
 
   kubedee::log_info "Configuring ${container_name} ..."
-  cat <<EOF | lxc exec "${container_name}" bash ${KUBEDEE_DEBUG:+-x}
+  cat <<EOF | "${_lxc}" exec "${container_name}" -- bash ${KUBEDEE_DEBUG:+-x}
 set -euo pipefail
 cat >/etc/systemd/system/etcd.service <<'ETCD_UNIT'
 [Unit]
@@ -908,13 +909,13 @@ kubedee::configure_controller() {
   kubedee::container_wait_running "${container_name}"
   kubedee::log_info "Providing files to ${container_name} ..."
 
-  lxc file push -p "${kubedee_dir}/clusters/${cluster_name}/certificates/"{kubernetes.pem,kubernetes-key.pem,ca.pem,ca-key.pem,etcd.pem,etcd-key.pem,ca-etcd.pem,ca-aggregation.pem,aggregation-client.pem,aggregation-client-key.pem} "${container_name}/etc/kubernetes/"
+  "${_lxc}" file push -p "${kubedee_dir}/clusters/${cluster_name}/certificates/"{kubernetes.pem,kubernetes-key.pem,ca.pem,ca-key.pem,etcd.pem,etcd-key.pem,ca-etcd.pem,ca-aggregation.pem,aggregation-client.pem,aggregation-client-key.pem} "${container_name}/etc/kubernetes/"
 
-  lxc file push -p "${kubedee_dir}/clusters/${cluster_name}/kubeconfig/"{kube-controller-manager.kubeconfig,kube-scheduler.kubeconfig} "${container_name}/etc/kubernetes/"
+  "${_lxc}" file push -p "${kubedee_dir}/clusters/${cluster_name}/kubeconfig/"{kube-controller-manager.kubeconfig,kube-scheduler.kubeconfig} "${container_name}/etc/kubernetes/"
 
   local kubescheduler_config_api_version="kubescheduler.config.k8s.io/v1"
   local k8s_minor_version="${kubernetes_version#*.}"
-  [ "${k8s_minor_version%.*}" -gt 1 ] && k8s_minor_version="${k8s_minor_version%.*}" || k8s_minor_version="$(lxc exec "${container_name}" -- /usr/local/bin/kubectl version --client -o json | jq -r .clientVersion.minor)"
+  [ "${k8s_minor_version%.*}" -gt 1 ] && k8s_minor_version="${k8s_minor_version%.*}" || k8s_minor_version="$("${_lxc}" exec "${container_name}" -- /usr/local/bin/kubectl version --client -o json | jq -r .clientVersion.minor)"
   if [[ "${k8s_minor_version}" == 16* ]] ||
     [[ "${k8s_minor_version}" == 17* ]]; then
     kubescheduler_config_api_version="kubescheduler.config.k8s.io/v1alpha1"
@@ -936,7 +937,7 @@ kubedee::configure_controller() {
   fi
 
   kubedee::log_info "Configuring ${container_name} ..."
-  cat <<EOF | lxc exec "${container_name}" bash ${KUBEDEE_DEBUG:+-x}
+  cat <<EOF | "${_lxc}" exec "${container_name}" -- bash ${KUBEDEE_DEBUG:+-x}
 set -euo pipefail
 cat >/etc/systemd/system/kube-apiserver.service <<'KUBE_APISERVER_UNIT'
 [Unit]
@@ -1127,7 +1128,7 @@ APISERVER_BINDING
 #   $2 The container name
 kubedee::launch_container() {
   local -r cluster_name="${1}" container_name="${2}" container_cpu="${3:-$(nproc)}" container_memory="${4:-4GiB}"
-  lxc info "${container_name}" &>/dev/null && return
+  "${_lxc}" info "${container_name}" &>/dev/null && return
   local -r network_id="$(cat "${kubedee_dir}/clusters/${cluster_name}/network_id")"
   local lxc_profile="kubedee-cnt"
   # shellcheck disable=SC2086,SC2154
@@ -1136,14 +1137,14 @@ kubedee::launch_container() {
   elif [ "$(mount | awk ' /\/sys\/fs\/cgroup / {print $5}')" = "cgroup2" ]; then
     lxc_profile=kubedee-cnt-unified
   fi
-  lxc init ${lxc_init_opts} \
+  "${_lxc}" init ${lxc_init_opts} \
     --profile "${lxc_profile}" \
     --config limits.cpu=${container_cpu} \
     --config limits.memory=${container_memory} \
     "${kubedee_image}" "${container_name}"
-  lxc network attach "kd-int-${network_id}" "${container_name}" eth0 eth0
-  lxc network attach "kd-ext-${network_id}" "${container_name}" eth1 eth1
-  lxc start "${container_name}"
+  "${_lxc}" network attach "kd-int-${network_id}" "${container_name}" eth0 eth0
+  "${_lxc}" network attach "kd-ext-${network_id}" "${container_name}" eth1 eth1
+  "${_lxc}" start "${container_name}"
   kubedee::ensure_machine_id "${container_name}"
   until [ -n "$(kubedee::container_ipv4_address "${container_name}")" ]; do sleep 3; done
 }
@@ -1164,7 +1165,7 @@ kubedee::configure_worker() {
   kubedee::log_info "Providing files to ${container_name} ..."
 
   tmp_dir="$(mktemp -d /tmp/kubedee-XXXXXX)"
-  lxc file push -pr \
+  "${_lxc}" file push -pr \
     "${kubedee_source_dir}/configs/crio/crictl.yaml" \
     "${kubedee_source_dir}/configs/crio/crio-umount.conf" \
     "${kubedee_source_dir}/configs/crio/policy.json" \
@@ -1172,8 +1173,8 @@ kubedee::configure_worker() {
     "${container_name}/etc/crio"
   rm -rf "${tmp_dir}"
 
-  lxc file push -p "${kubedee_dir}/clusters/${cluster_name}/certificates/"{"${container_name}.pem","${container_name}-key.pem",ca.pem} "${container_name}/etc/kubernetes/"
-  lxc file push -p "${kubedee_dir}/clusters/${cluster_name}/kubeconfig/"{"${container_name}-kubelet.kubeconfig",kube-proxy.kubeconfig} "${container_name}/etc/kubernetes/"
+  "${_lxc}" file push -p "${kubedee_dir}/clusters/${cluster_name}/certificates/"{"${container_name}.pem","${container_name}-key.pem",ca.pem} "${container_name}/etc/kubernetes/"
+  "${_lxc}" file push -p "${kubedee_dir}/clusters/${cluster_name}/kubeconfig/"{"${container_name}-kubelet.kubeconfig",kube-proxy.kubeconfig} "${container_name}/etc/kubernetes/"
 
   if [[ "$(kubedee::container_type "${container_name}")" == "container" ]]; then
     # Mount the host loop devices into the container to allow the kubelet
@@ -1181,7 +1182,7 @@ kubedee::configure_worker() {
     # (e.g. `/dev/mapper/c--vg-root on /dev/loop1 type ext4 ...`)
     shopt -s nullglob
     for ldev in /dev/loop[0-9]*; do
-      lxc config device add "${container_name}" "${ldev#/dev/}" unix-block source="${ldev}" path="${ldev}"
+      "${_lxc}" config device add "${container_name}" "${ldev#/dev/}" unix-block source="${ldev}" path="${ldev}"
     done
     shopt -u nullglob
 
@@ -1189,17 +1190,17 @@ kubedee::configure_worker() {
     # kubelet's OOM manager to do its job. Otherwise we encounter the
     # following error:
     # `Failed to start OOM watcher open /dev/kmsg: no such file or directory`
-    lxc config device add "${container_name}" "kmsg" unix-char source="/dev/kmsg" path="/dev/kmsg"
-    lxc config device add "${container_name}" "kvm" unix-char source="/dev/kvm" path="/dev/kvm"
-    lxc config device add "${container_name}" "net-tun" unix-char source="/dev/net/tun" path="/dev/net/tun"
-    lxc config device add "${container_name}" "vhost-net" unix-char source="/dev/vhost-net" path="/dev/vhost-net"
-    lxc config device add "${container_name}" "vhost-scsi" unix-char source="/dev/vhost-scsi" path="/dev/vhost-sci"
-    lxc config device add "${container_name}" "vhost-vsock" unix-char source="/dev/vhost-vsock" path="/dev/vhost-vsock"
-    lxc config device add "${container_name}" "vsock" unix-char source="/dev/vsock" path="/dev/vsock"
+    "${_lxc}" config device add "${container_name}" "kmsg" unix-char source="/dev/kmsg" path="/dev/kmsg"
+    "${_lxc}" config device add "${container_name}" "kvm" unix-char source="/dev/kvm" path="/dev/kvm"
+    "${_lxc}" config device add "${container_name}" "net-tun" unix-char source="/dev/net/tun" path="/dev/net/tun"
+    "${_lxc}" config device add "${container_name}" "vhost-net" unix-char source="/dev/vhost-net" path="/dev/vhost-net"
+    "${_lxc}" config device add "${container_name}" "vhost-scsi" unix-char source="/dev/vhost-scsi" path="/dev/vhost-sci"
+    "${_lxc}" config device add "${container_name}" "vhost-vsock" unix-char source="/dev/vhost-vsock" path="/dev/vhost-vsock"
+    "${_lxc}" config device add "${container_name}" "vsock" unix-char source="/dev/vsock" path="/dev/vsock"
   fi
 
   kubedee::log_info "Configuring ${container_name} ..."
-  cat <<EOF | lxc exec "${container_name}" bash ${KUBEDEE_DEBUG:+-x}
+  cat <<EOF | "${_lxc}" exec "${container_name}" -- bash ${KUBEDEE_DEBUG:+-x}
 set -euo pipefail
 
 mkdir -p /etc/containers
@@ -1413,26 +1414,27 @@ kubedee::wait_for_node() {
 kubedee::prepare_image() {
   local -r cluster_name="${1}" image_name="${2:-${kubedee_image}}" image_type="${3:-container}"
   local -r builder_instance="${image_name}-setup"
-  lxc image info "${image_name}" &>/dev/null && return
+  local _lxc_snapshot_create
+  "${_lxc}" image info "${image_name}" &>/dev/null && return
   kubedee::log_info "Preparing kubedee ${image_type} image ..."
-  lxc delete -f "${builder_instance}" &>/dev/null ||:
+  "${_lxc}" delete -f "${builder_instance}" &>/dev/null ||:
   local -r network_id="$(cat "${kubedee_dir}/clusters/${cluster_name}/network_id")"
   # shellcheck disable=SC2086
   [[ "${image_type}" == "vm" ]] && prep_init_opts="${lxc_init_opts}" || prep_init_opts="--config raw.lxc='${raw_lxc_apparmor_allow_incomplete}'"
-  lxc init ${prep_init_opts} \
+  "${_lxc}" init ${prep_init_opts} \
     --storage default \
     --config limits.memory=4GiB \
     --config limits.cpu=$(nproc) \
     "${kubedee_base_image}" "${builder_instance}"
-  lxc config device set "${builder_instance}" root size="${rootfs_size:-20GiB}"
-  lxc network attach "kd-int-${network_id}" "${builder_instance}" eth0 eth0
-  lxc network attach "kd-ext-${network_id}" "${builder_instance}" eth1 eth1
-  lxc start "${builder_instance}"
+  "${_lxc}" config device set "${builder_instance}" root size="${rootfs_size:-20GiB}"
+  "${_lxc}" network attach "kd-int-${network_id}" "${builder_instance}" eth0 eth0
+  "${_lxc}" network attach "kd-ext-${network_id}" "${builder_instance}" eth1 eth1
+  "${_lxc}" start "${builder_instance}"
   kubedee::container_wait_running "${builder_instance}"
-  lxc exec "${builder_instance}" -- apt-get update
+  "${_lxc}" exec "${builder_instance}" -- apt-get update
 
   if [[ "${image_type}" == "vm" ]]; then
-    lxc exec "${builder_instance}" -- bash ${KUBEDEE_DEBUG:+-x} <<'EOF'
+    "${_lxc}" exec "${builder_instance}" -- bash ${KUBEDEE_DEBUG:+-x} <<'EOF'
 set -euo pipefail
 DEBIAN_FRONTEND=noninteractive apt-get -y install cloud-init lvm2 open-iscsi zram-tools
 InitiatorName=$(iscsi-iname) > /etc/iscsi/initiatorname.iscsi
@@ -1441,11 +1443,11 @@ resize2fs /dev/sda2
 systemctl enable zramswap
 EOF
   elif [[ "${image_type}" == "container" ]]; then
-    lxc exec "${builder_instance}" -- bash ${KUBEDEE_DEBUG:+-x} -c "sed 's/^Name=.*/Name=eth1/' /etc/systemd/network/eth0.network > /etc/systemd/network/eth1.network"
+    "${_lxc}" exec "${builder_instance}" -- bash ${KUBEDEE_DEBUG:+-x} -c "sed 's/^Name=.*/Name=eth1/' /etc/systemd/network/eth0.network > /etc/systemd/network/eth1.network"
   fi
 
   # system dependencies
-  lxc exec "${builder_instance}" bash <<'EOF'
+  "${_lxc}" exec "${builder_instance}" bash <<'EOF'
 set -euo pipefail
 # crio requires libgpgme11 runc timezone
 # helm requires socat
@@ -1459,7 +1461,7 @@ EOF
 
   # k8s components
   if [[ "${use_host_binaries}" == "true" ]]; then
-    lxc file push -pr \
+    "${_lxc}" file push -pr \
       "$(readlink -f "$(command -v etcd)")" \
       "$(readlink -f "$(command -v etcdctl)")" \
       "$(readlink -f "$(command -v crio)")" \
@@ -1467,7 +1469,7 @@ EOF
       "$(readlink -f "$(command -v pinns)")" \
       "$(readlink -f "$(command -v registry)")" \
       "${builder_instance}/usr/local/bin"
-    lxc file push -pr \
+    "${_lxc}" file push -pr \
       "$(readlink -f "$(command -v bandwidth)")" \
       "$(readlink -f "$(command -v bridge)")" \
       "$(readlink -f "$(command -v dhcp)")" \
@@ -1486,7 +1488,7 @@ EOF
       "$(readlink -f "$(command -v vlan)")" \
       "${builder_instance}/opt/cni/bin"
   else
-    lxc exec "${builder_instance}" -- bash ${KUBEDEE_DEBUG:+-x} <<EOF
+    "${_lxc}" exec "${builder_instance}" -- bash ${KUBEDEE_DEBUG:+-x} <<EOF
 ## build dependencies
 DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
   build-essential \
@@ -1572,10 +1574,10 @@ EOF
 
   if [[ -n "${kubernetes_version}" ]]; then
     # fetch_k8s
-    lxc exec "${builder_instance}" -- bash ${KUBEDEE_DEBUG:+-x} -c "cd /usr/local/bin; curl -fsSL -o- 'https://dl.k8s.io/${kubernetes_version}/kubernetes-server-linux-${sys_arch}.tar.gz' | tar -xz --strip-components 3 kubernetes/server/bin/{kube-apiserver,kube-controller-manager,kubectl,kubelet,kube-proxy,kube-scheduler}"
+    "${_lxc}" exec "${builder_instance}" -- bash ${KUBEDEE_DEBUG:+-x} -c "cd /usr/local/bin; curl -fsSL -o- 'https://dl.k8s.io/${kubernetes_version}/kubernetes-server-linux-${sys_arch}.tar.gz' | tar -xz --strip-components 3 kubernetes/server/bin/{kube-apiserver,kube-controller-manager,kubectl,kubelet,kube-proxy,kube-scheduler}"
   else
     # shellcheck disable=SC2154
-    lxc file push -pr \
+    "${_lxc}" file push -pr \
       "${bin_dir}/kube-apiserver" \
       "${bin_dir}/kube-controller-manager" \
       "${bin_dir}/kubectl" \
@@ -1589,10 +1591,12 @@ EOF
     kubedee::vm_fixups "${builder_instance}"
   fi
 
-  lxc stop --timeout 60 "${builder_instance}" || lxc stop --force "${builder_instance}" ||:
-  lxc snapshot "${builder_instance}" snap
-  lxc publish "${builder_instance}/snap" --alias "${image_name}" kubedee-version="${kubedee_version}"
-  lxc delete -f "${builder_instance}" || (lxc network detach "kd-int-${network_id}" "${builder_instance}" && lxc network detach "kd-ext-${network_id}" "${builder_instance}")
+  [ "${_lxc##*/}" = "incus" ] && _lxc_snapshot_create="${_lxc} snapshot create" || _lxc_snapshot_create="${_lxc} snapshot"
+  "${_lxc}" stop --timeout 60 "${builder_instance}" || "${_lxc}" stop --force "${builder_instance}" ||:
+  ${_lxc_snapshot_create} "${builder_instance}" snap
+  "${_lxc}" publish "${builder_instance}/snap" --alias "${image_name}" kubedee-version="${kubedee_version}"
+  [ "${_lxc##*/}" != "incus" ] || "${_lxc}" snapshot delete "${builder_instance}" snap ||:
+  "${_lxc}" delete -f "${builder_instance}" || ("${_lxc}" network detach "kd-int-${network_id}" "${builder_instance}" && "${_lxc}" network detach "kd-ext-${network_id}" "${builder_instance}")
 }
 
 # Args:
@@ -1610,7 +1614,7 @@ kubedee::smoke_test() {
   # Pick one of the worker nodes with kube-proxy
   # running and test if the service is reachable
   local worker
-  for c in $(lxc list --format json | jq -r '.[].name'); do
+  for c in $("${_lxc}" list --format json | jq -r '.[].name'); do
     if [[ "${c}" == "kubedee-${cluster_name}-worker-"* ]]; then
       worker="${c}"
       break
