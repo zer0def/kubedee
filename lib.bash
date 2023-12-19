@@ -906,7 +906,7 @@ kubedee::configure_controller() {
 
   lxc file push -p "${kubedee_dir}/clusters/${cluster_name}/kubeconfig/"{kube-controller-manager.kubeconfig,kube-scheduler.kubeconfig} "${container_name}/etc/kubernetes/"
 
-  local kubescheduler_config_api_version="kubescheduler.config.k8s.io/v1beta3"
+  local kubescheduler_config_api_version="kubescheduler.config.k8s.io/v1"
   local k8s_minor_version="${kubernetes_version#*.}"
   [ "${k8s_minor_version%.*}" -gt 1 ] && k8s_minor_version="${k8s_minor_version%.*}" || k8s_minor_version="$(lxc exec "${container_name}" -- /usr/local/bin/kubectl version --client -o json | jq -r .clientVersion.minor)"
   if [[ "${k8s_minor_version}" == 16* ]] ||
@@ -922,8 +922,11 @@ kubedee::configure_controller() {
   if [[ "${k8s_minor_version}" == 2[01]* ]]; then
     kubescheduler_config_api_version="kubescheduler.config.k8s.io/v1beta1"
   fi
-  if [[ "${k8s_minor_version}" == 22* ]]; then
+  if [[ "${k8s_minor_version}" == 2[2345]* ]]; then
     kubescheduler_config_api_version="kubescheduler.config.k8s.io/v1beta2"
+  fi
+  if [[ "${k8s_minor_version}" == 2[678]* ]]; then
+    kubescheduler_config_api_version="kubescheduler.config.k8s.io/v1beta3"
   fi
 
   kubedee::log_info "Configuring ${container_name} ..."
