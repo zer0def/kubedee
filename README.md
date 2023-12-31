@@ -90,6 +90,24 @@ kubedee-test-worker-zm8ikt   NotReady   node     2s    v1.21.1
 
 kubectl's current-context has been changed to the new cluster automatically.
 
+### Incus/LXD VM setup notes
+
+It might be the case that your particular system prevents any user from using
+`io_uring`, due to a relatively-recent-at-the-time-of-writing outpour of related
+CVEs. This is usually signalled by the `failed to init linux io_uring ring` error.
+
+Should that be the case, in order to spawn VMs through Incus/LXD, the operator
+would need to either run the respective daemon with `CAP_SYS_ADMIN` priviledges
+or add it's user to a group designated to access `io_uring`. Example follows:
+
+```
+IO_URING_GID=666 IO_URING_GNAME="io_uring"
+groupadd -r -g "${IO_URING_GID}" "${IO_URING_GNAME}"  # create io_uring group
+sysctl -w kernel.io_uring_group="${IO_URING_GID}"  # designate it as such by gid
+gpasswd -a incus "${IO_URING_GNAME}"  # add respective daemon's user to said group
+systemctl restart incus  # go nuts
+```
+
 ### Cheatsheet
 
 List the available clusters:
