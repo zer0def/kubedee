@@ -98,9 +98,15 @@ fi
 
 kubedee::restart_container() {
   local -r container_name="${1}"
-  until "${_lxc}" exec "${container_name}" -- bash ${KUBEDEE_DEBUG:+-x} -c '[ ! -e /run/nologin ]' &>/dev/null; do
-    sleep 3
-  done
+  local attempts=0 success=0
+  while [ "${success}" -eq 0 ]; do until "${_lxc}" exec "${container_name}" -- bash ${KUBEDEE_DEBUG:+-x} -c '[ ! -e /run/nologin ]' &>/dev/null; do
+    sleep 3; attempts="$((${attempts}+1))"
+    [ "${attempts}" -lt 20 ] || {
+      attempts=0
+      "${_lxc}" stop --timeout 60 "${container_name}" || "${_lxc}" stop --force "${container_name}" ||:
+      "${_lxc}" start "${container_name}"
+    }
+  done; success=1; done
 }
 
 # Args:
@@ -138,10 +144,18 @@ EOF
 #   $1 The full container name
 kubedee::ensure_machine_id() {
   local -r container_name="${1}"
+  local attempts=0 success=0
   [[ "$(kubedee::container_type "${container_name}")" == "container" ]] && return
-  until "${_lxc}" exec "${container_name}" -- bash ${KUBEDEE_DEBUG:+-x} -c "dbus-uuidgen --ensure=/etc/machine-id; until [ ! -e /run/nologin ]; do :; done; sed -i 's#\(^127.0.1.1[[:space:]]*\).*#\1${container_name}#' /etc/hosts; echo ${container_name} >/etc/hostname"; do
-    sleep 3
-  done
+
+  while [ "${success}" -eq 0 ]; do until "${_lxc}" exec "${container_name}" -- bash ${KUBEDEE_DEBUG:+-x} -c "dbus-uuidgen --ensure=/etc/machine-id; until [ ! -e /run/nologin ]; do :; done; sed -i 's#\(^127.0.1.1[[:space:]]*\).*#\1${container_name}#' /etc/hosts; echo ${container_name} >/etc/hostname"; do
+    sleep 3; attempts="$((${attempts}+1))"
+    [ "${attempts}" -lt 20 ] || {
+      attempts=0
+      "${_lxc}" stop --timeout 60 "${container_name}" || "${_lxc}" stop --force "${container_name}" ||:
+      "${_lxc}" start "${container_name}"
+    }
+  done; success=1; done
+
   if [[ "$(kubedee::container_type "${container_name}")" == "virtual-machine" ]]; then
     "${_lxc}" exec "${container_name}" -- bash ${KUBEDEE_DEBUG:+-x} -c "sed -e 's/^MACAddress=.*/MACAddress=$("${_lxc}" config get ${container_name} volatile.eth1.hwaddr)/' -e 's/^Name=.*/Name=eth1/' \$(ls -1 /etc/systemd/network/*.network | head -n1) > /etc/systemd/network/11-cloud-init-eth1.network"
   fi
@@ -217,9 +231,9 @@ kubedee::create_network() {
   fi
   kubedee::log_info "Creating network for ${cluster_name} ..."
   for i in "kd-int-${network_id}" "kd-ext-${network_id}"; do
-    if ! "${_lxc}" network show "${i}" &>/dev/null; then
-      "${_lxc}" network create "${i}" ipv4.dhcp.expiry=infinite
-    fi
+    until "${_lxc}" network show "${i}" &>/dev/null || \
+      "${_lxc}" network create "${i}" ipv4.dhcp.expiry=infinite \
+      ipv6.address="fd$(tr -dc '0-9a-f' </dev/urandom|head -c1)0::1/12"; do sleep 1; done # ipv6.dhcp.stateful=true
   done
 }
 
@@ -266,7 +280,7 @@ kubedee::container_status_code() {
 #   $1 The full container name
 kubedee::container_ipv4_address() {
   local -r container_name="${1}"
-  "${_lxc}" list --format json | jq -r ".[] | select(.name == \"${container_name}\").state.network | to_entries[] | select(.key|test(\"^(enp|ens|eth)\")).value.addresses[] | select(.family == \"inet\").address" | head -n1
+  "${_lxc}" list --format json | jq -r ".[] | select(.name == \"${container_name}\").state.network | to_entries[] | select(.key|test(\"^(enp|ens|eth)\")).value.addresses[] | select(.scope == \"global\") | select(.family == \"inet\").address" | head -n1
 }
 
 # Args:
@@ -295,6 +309,7 @@ kubedee::container_wait_running() {
     kubedee::log_info "Waiting for ${cluster_name} to settle it's assigned IPv4 address ..."
     sleep 3
   done
+  until "${_lxc}" exec "${cluster_name}" -- hostname; do sleep 3; done
 }
 
 # Args:
@@ -1291,6 +1306,7 @@ ExecStart=/usr/local/bin/kubelet \\
   --image-service-endpoint=unix:///var/run/crio/crio.sock \\
   --kubeconfig=/etc/kubernetes/${container_name}-kubelet.kubeconfig \\
   --register-node=true \\
+  --max-pods 1000 \\
   --v=2
 Restart=on-failure
 RestartSec=5
