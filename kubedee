@@ -139,10 +139,10 @@ cmd_start() {
   [[ "${enable_insecure_registry}" == "true" ]] && kubedee::launch_registry "${cluster_name}"
   kubedee::launch_container "${cluster_name}" "kubedee-${cluster_name}-controller" "${controller_limits_cpu}" "${controller_limits_memory}"
   for ((i = 0; i < num_worker; i++)); do
-    kubedee::launch_container "${cluster_name}" "kubedee-${cluster_name}-worker-${worker_suffixes[${i}]}" "${worker_limits_cpu}" "${worker_limits_memory}" &
+    kubedee::launch_container "${cluster_name}" "kubedee-${cluster_name}-worker-${worker_suffixes[${i}]}" "${worker_limits_cpu}" "${worker_limits_memory}" #&
   done
   # shellcheck disable=SC2046
-  wait $(jobs -rp)
+  #wait $(jobs -rp)
   kubedee::configure_etcd "${cluster_name}"
   [[ "${enable_insecure_registry}" == "true" ]] && kubedee::configure_registry "${cluster_name}"
   kubedee::create_certificate_kubernetes "${cluster_name}" "${apiserver_extra_hostnames}"
