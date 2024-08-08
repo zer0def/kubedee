@@ -929,11 +929,14 @@ kubedee::configure_controller() {
 
   "${_lxc}" file push "${kubedee_dir}/clusters/${cluster_name}/kubeconfig/"{kube-controller-manager.kubeconfig,kube-scheduler.kubeconfig} "${container_name}/etc/kubernetes/"
 
-  local kubescheduler_config_api_version="kubescheduler.config.k8s.io/v1"
+  local kubescheduler_config_api_version="kubescheduler.config.k8s.io/v1" api_audiences="api-audiences=kubernetes.default.svc"
   local k8s_minor_version="${kubernetes_version#*.}"
   [ "${k8s_minor_version%.*}" -gt 1 ] && k8s_minor_version="${k8s_minor_version%.*}" || k8s_minor_version="$("${_lxc}" exec "${container_name}" -- /usr/local/bin/kubectl version --client -o json | jq -r .clientVersion.minor)"
-  if [[ "${k8s_minor_version}" == 16* ]] ||
-    [[ "${k8s_minor_version}" == 17* ]]; then
+  if [[ "${k8s_minor_version}" == [0-9] ]] || [[ "${k8s_minor_version}" == 1[0-2]* ]]; then
+    kubescheduler_config_api_version="componentconfig/v1alpha1"
+    api_audiences="service-account-${api_audiences}"
+  fi
+  if [[ "${k8s_minor_version}" == 1[3-7]* ]]; then
     kubescheduler_config_api_version="kubescheduler.config.k8s.io/v1alpha1"
   fi
   if [[ "${k8s_minor_version}" == 18* ]]; then
@@ -945,10 +948,10 @@ kubedee::configure_controller() {
   if [[ "${k8s_minor_version}" == 2[01]* ]]; then
     kubescheduler_config_api_version="kubescheduler.config.k8s.io/v1beta1"
   fi
-  if [[ "${k8s_minor_version}" == 2[2345]* ]]; then
+  if [[ "${k8s_minor_version}" == 2[2-5]* ]]; then
     kubescheduler_config_api_version="kubescheduler.config.k8s.io/v1beta2"
   fi
-  if [[ "${k8s_minor_version}" == 2[678]* ]]; then
+  if [[ "${k8s_minor_version}" == 2[6-8]* ]]; then
     kubescheduler_config_api_version="kubescheduler.config.k8s.io/v1beta3"
   fi
 
@@ -982,7 +985,7 @@ ExecStart=/usr/local/bin/kube-apiserver \\
   --runtime-config=rbac.authorization.k8s.io/v1alpha1 \\
   --service-account-issuer=https://api \\
   --service-account-signing-key-file=/etc/kubernetes/ca-key.pem \\
-  --api-audiences=kubernetes.default.svc \\
+  --${api_audiences} \\
   --service-account-key-file=/etc/kubernetes/ca-key.pem \\
   --service-cluster-ip-range=10.32.0.0/24 \\
   --service-node-port-range=30000-32767 \\
@@ -1349,14 +1352,20 @@ EOF
 # Args:
 #   $1 The validated cluster name
 kubedee::deploy_cni() {
-  local cluster_name="${1}" suffix
-  [ -z "${2}" ] && suffix="-masqed" || suffix="-routed"
-  kubedee::log_info "Deploying CNI ..."
+  local cluster_name="${1}" suffix k8s_minor_version whereabouts_manifest=""
+
+  [ -n "${kubernetes_version}" ] && k8s_minor_version="$(awk -F. '{print $2}' <<<${kubernetes_version})" || k8s_minor_version="$("${_lxc}" exec "${cluster_name}" -- /usr/local/bin/kubectl version --client -o json | jq -r .clientVersion.minor)"
+  if [ "${k8s_minor_version}" -ge 16 ]; then  # CRDs API
+    whereabouts_manifest="${kubedee_source_dir}/manifests/cni/whereabouts.yml"
   # "${kubedee_source_dir}/manifests/cni/multus-thick.yml"
   # "${kubedee_source_dir}/manifests/cni/multus-thin.yml"
+  fi
+
+  [ -z "${2}" ] && suffix="-masqed" || suffix="-routed"
+  kubedee::log_info "Deploying CNI ..."
   cat "${kubedee_source_dir}/manifests/cni/flannel-common.yml" \
       "${kubedee_source_dir}/manifests/cni/flannel${suffix}.yml" \
-      "${kubedee_source_dir}/manifests/cni/whereabouts.yml" \
+      ${whereabouts_manifest} \
       | "${_kubectl}" --kubeconfig "${kubedee_dir}/clusters/${cluster_name}/kubeconfig/admin.kubeconfig" apply -f-
 }
 
@@ -1381,6 +1390,10 @@ kubedee::deploy_metrics_server() {
 #   $1 The validated cluster name
 kubedee::deploy_kata_runtimes() {
   local -r cluster_name="${1}"
+  local k8s_minor_version
+  [ -n "${kubernetes_version}" ] && k8s_minor_version="$(awk -F. '{print $2}' <<<${kubernetes_version})" || k8s_minor_version="$("${_lxc}" exec "${cluster_name}" -- /usr/local/bin/kubectl version --client -o json | jq -r .clientVersion.minor)"
+  [ "${k8s_minor_version}" -ge 20 ] || return 0  # node.k8s.io/v1/RuntimeClass
+
   local -r kata_manifest="${kubedee_source_dir}/manifests/kata-runtime-classes.yml"
   kubedee::log_info "Deploy Kata-Containers runtime classes ..."
   kubectl --kubeconfig "${kubedee_dir}/clusters/${cluster_name}/kubeconfig/admin.kubeconfig" apply -f "${kata_manifest}"
