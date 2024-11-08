@@ -909,9 +909,10 @@ kubedee::configure_controller() {
   kubedee::container_wait_running "${container_name}"
   kubedee::log_info "Providing files to ${container_name} ..."
 
-  "${_lxc}" file push -p "${kubedee_dir}/clusters/${cluster_name}/certificates/"{kubernetes.pem,kubernetes-key.pem,ca.pem,ca-key.pem,etcd.pem,etcd-key.pem,ca-etcd.pem,ca-aggregation.pem,aggregation-client.pem,aggregation-client-key.pem} "${container_name}/etc/kubernetes/"
+  "${_lxc}" exec "${container_name}" -- mkdir -p /etc/kubernetes/
+  "${_lxc}" file push "${kubedee_dir}/clusters/${cluster_name}/certificates/"{kubernetes.pem,kubernetes-key.pem,ca.pem,ca-key.pem,etcd.pem,etcd-key.pem,ca-etcd.pem,ca-aggregation.pem,aggregation-client.pem,aggregation-client-key.pem} "${container_name}/etc/kubernetes/"
 
-  "${_lxc}" file push -p "${kubedee_dir}/clusters/${cluster_name}/kubeconfig/"{kube-controller-manager.kubeconfig,kube-scheduler.kubeconfig} "${container_name}/etc/kubernetes/"
+  "${_lxc}" file push "${kubedee_dir}/clusters/${cluster_name}/kubeconfig/"{kube-controller-manager.kubeconfig,kube-scheduler.kubeconfig} "${container_name}/etc/kubernetes/"
 
   local kubescheduler_config_api_version="kubescheduler.config.k8s.io/v1"
   local k8s_minor_version="${kubernetes_version#*.}"
@@ -1172,9 +1173,9 @@ kubedee::configure_worker() {
     "${kubedee_source_dir}/configs/crio/crio.conf" \
     "${container_name}/etc/crio"
   rm -rf "${tmp_dir}"
-
-  "${_lxc}" file push -p "${kubedee_dir}/clusters/${cluster_name}/certificates/"{"${container_name}.pem","${container_name}-key.pem",ca.pem} "${container_name}/etc/kubernetes/"
-  "${_lxc}" file push -p "${kubedee_dir}/clusters/${cluster_name}/kubeconfig/"{"${container_name}-kubelet.kubeconfig",kube-proxy.kubeconfig} "${container_name}/etc/kubernetes/"
+  "${_lxc}" exec "${container_name}" -- mkdir -p /etc/kubernetes/
+  "${_lxc}" file push "${kubedee_dir}/clusters/${cluster_name}/certificates/"{"${container_name}.pem","${container_name}-key.pem",ca.pem} "${container_name}/etc/kubernetes/"
+  "${_lxc}" file push "${kubedee_dir}/clusters/${cluster_name}/kubeconfig/"{"${container_name}-kubelet.kubeconfig",kube-proxy.kubeconfig} "${container_name}/etc/kubernetes/"
 
   if [[ "$(kubedee::container_type "${container_name}")" == "container" ]]; then
     # Mount the host loop devices into the container to allow the kubelet
